@@ -1,0 +1,90 @@
+:root {
+  font-family:
+    'Instrument Sans', 'Avenir Next', 'Segoe UI', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #18333d;
+  background:
+    radial-gradient(circle at top, rgba(233, 174, 115, 0.24), transparent 28%),
+    linear-gradient(180deg, #f6f0e6 0%, #efe7da 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --text: #18333d;
+  --muted: #5f716f;
+  --accent: #c05d2e;
+  --accent-strong: #9f4b1f;
+  --border: rgba(24, 51, 61, 0.12);
+  --panel: rgba(247, 242, 233, 0.82);
+  --shadow: 0 22px 70px rgba(45, 39, 34, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+}
+
+body,
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button,
+select,
+input {
+  outline: none;
+}
+
+button:focus-visible,
+select:focus-visible,
+input:focus-visible {
+  box-shadow: 0 0 0 3px rgba(192, 93, 46, 0.2);
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3,
+p {
+  margin-top: 0;
+}
+
+h1,
+h2,
+h3 {
+  font-family:
+    'Fraunces', 'Iowan Old Style', 'Palatino Linotype', serif;
+  color: var(--text);
+  line-height: 0.98;
+}
+
+h1 {
+  font-size: clamp(3rem, 6vw, 5.6rem);
+  letter-spacing: -0.05em;
+}
+
+h2 {
+  font-size: 1.8rem;
+  letter-spacing: -0.03em;
+}
+
+h3 {
+  font-size: 1.05rem;
+  letter-spacing: -0.02em;
+}
