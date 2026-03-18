@@ -570,8 +570,8 @@ export function AppShell() {
             <>
           <div className="left-sidebar__header">
             <div>
-              <p className="mini-label">Kin</p>
-              <h1>{String(graph.metadata.treeName ?? 'Family Tree')}</h1>
+              <p className="mini-label">Vaṃsam</p>
+              <h1>{String(graph.metadata.treeName ?? 'வம்சம்')}</h1>
             </div>
           </div>
 
@@ -714,7 +714,7 @@ export function AppShell() {
 
           {!graphHasRenderablePeople(graph) && (
             <div className="empty-canvas-state">
-              <p className="mini-label">Blank Graph</p>
+              <p className="mini-label">Vaṃsam</p>
               <h2>Add the first person.</h2>
               <p>Then use quick actions to add parents, children, partners, and siblings through shared parents.</p>
               <button type="button" onClick={() => handleCreateStandalonePerson('First Person')}>
