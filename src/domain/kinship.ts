@@ -32,6 +32,15 @@ export type CanonicalRelationKey =
   | 'paternal_in_law'
   | 'cousin'
 
+export type SocialRelationKey =
+  | 'parent'
+  | 'child'
+  | 'sibling'
+  | 'grandparent'
+  | 'grandchild'
+  | 'uncle'
+  | 'aunty'
+
 export type KinshipLabelSet = {
   en: string
   ta: string
@@ -267,6 +276,62 @@ export const KINSHIP_LABELS: Record<CanonicalRelationKey, KinshipLabelSet> = {
   },
 }
 
+export const SOCIAL_LABELS: Record<SocialRelationKey, KinshipLabelSet> = {
+  parent: {
+    en: 'parent',
+    ta: 'அப்பா / அம்மா',
+    taLatin: 'appā / ammā',
+    hi: 'माता / पिता',
+    hiLatin: 'mātā / pitā',
+  },
+  child: {
+    en: 'child',
+    ta: 'மகன் / மகள்',
+    taLatin: 'magaṉ / magaḷ',
+    hi: 'बेटा / बेटी',
+    hiLatin: 'beṭā / beṭī',
+  },
+  sibling: {
+    en: 'sibling',
+    ta: 'அண்ணன் / அக்கா / தம்பி / தங்கை',
+    taLatin: 'aṇṇaṉ / akkā / tampi / taṅgai',
+    hi: 'भाई / बहन',
+    hiLatin: 'bhāī / bahan',
+  },
+  grandparent: {
+    en: 'grandparent',
+    ta: 'தாத்தா / பாட்டி',
+    taLatin: 'tāttā / pāṭṭi',
+    hi: 'दादा / दादी / नाना / नानी',
+    hiLatin: 'dādā / dādī / nānā / nānī',
+  },
+  grandchild: {
+    en: 'grandchild',
+    ta: 'பேரன் / பேத்தி',
+    taLatin: 'pēraṉ / pētti',
+    hi: 'पोता / पोती / नाती / नातिन',
+    hiLatin: 'pōtā / pōtī / nātī / nātin',
+  },
+  uncle: {
+    en: 'uncle',
+    ta: 'மாமா / சித்தப்பா / பெரியப்பா',
+    taLatin: 'māmā / cittappā / periyappā',
+    hi: 'मामा / चाचा / ताऊ',
+    hiLatin: 'māmā / cācā / tāū',
+  },
+  aunty: {
+    en: 'aunty',
+    ta: 'அத்தை / சித்தி / பெரியம்மா',
+    taLatin: 'attai / citti / periyammā',
+    hi: 'मौसी / बुआ / चाची / ताई',
+    hiLatin: 'mausī / buā / cācī / tāī',
+  },
+}
+
 export function labelsForRelation(key: CanonicalRelationKey): KinshipLabelSet {
   return KINSHIP_LABELS[key]
+}
+
+export function labelsForSocialRelation(key: SocialRelationKey): KinshipLabelSet {
+  return SOCIAL_LABELS[key]
 }

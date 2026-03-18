@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
 import { displayName, personConnections, type PersonView } from '../../domain/graphOps'
+import { PersonAvatar } from '../PersonAvatar'
 import { PersonTokenSelector } from '../PersonTokenSelector'
 
 type ConnectionComposerPredicate =
@@ -182,7 +183,7 @@ export function Inspector({
 
       {!collapsed && <div className="inspector-body">
         <div className="profile-card">
-          <div className="profile-photo">{selectedPerson.photo}</div>
+          <PersonAvatar person={selectedPerson} className="profile-photo" />
           <div>
             <strong>{selectedPerson.label}</strong>
             <p>{selectedPerson.years}</p>

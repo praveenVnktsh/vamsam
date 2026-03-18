@@ -75,7 +75,7 @@ export function AppShell({
   const includeNonBlood = false
   const [compactLayout, setCompactLayout] = useState(true)
   const [layoutMode, setLayoutMode] = useState<'person' | 'family'>('family')
-  const [layoutAlgorithm, setLayoutAlgorithm] = useState<'hierarchy' | 'organic'>('hierarchy')
+  const [layoutAlgorithm, setLayoutAlgorithm] = useState<'hierarchy' | 'organic'>('organic')
   const [viewControlsCollapsed, setViewControlsCollapsed] = useState(true)
   const [relationshipDialogCollapsed, setRelationshipDialogCollapsed] = useState(true)
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
@@ -88,6 +88,8 @@ export function AppShell({
   const layoutRunRef = useRef(0)
   const saveRunRef = useRef(0)
   const hasInitializedSaveRef = useRef(false)
+  const previousLayoutAlgorithmRef = useRef<'hierarchy' | 'organic'>('organic')
+  const organicSeedKeyRef = useRef('')
   const depthIndex = depthOptions.indexOf(depth)
 
   function expandViewPanel() {
@@ -329,6 +331,48 @@ export function AppShell({
   }, [relationshipFromId, relationshipToId])
 
   useEffect(() => {
+    const organicSeedKey = `${layoutMode}:${compactLayout}`
+    const enteringOrganic =
+      previousLayoutAlgorithmRef.current !== 'organic' && layoutAlgorithm === 'organic'
+    const needsInitialSeed = layoutAlgorithm === 'organic' && organicSeedKeyRef.current === ''
+    const needsModeReseed =
+      layoutAlgorithm === 'organic' &&
+      organicSeedKeyRef.current !== '' &&
+      organicSeedKeyRef.current !== organicSeedKey
+
+    previousLayoutAlgorithmRef.current = layoutAlgorithm
+
+    if (!enteringOrganic && !needsInitialSeed && !needsModeReseed) {
+      return
+    }
+
+    if (!graphHasRenderablePeople(graphRef.current)) {
+      organicSeedKeyRef.current = organicSeedKey
+      return
+    }
+
+    const runId = layoutRunRef.current + 1
+    layoutRunRef.current = runId
+
+    void (async () => {
+      const seededGraph = await autoLayoutGraph(graphRef.current, visibleIds, {
+        compact: compactLayout,
+        layoutMode,
+        layoutAlgorithm: 'organic',
+      })
+
+      if (layoutRunRef.current === runId) {
+        organicSeedKeyRef.current = organicSeedKey
+        setGraph(seededGraph)
+      }
+    })()
+  }, [compactLayout, layoutAlgorithm, layoutMode, visibleIds])
+
+  useEffect(() => {
+    if (layoutAlgorithm === 'organic') {
+      return
+    }
+
     const runId = layoutRunRef.current + 1
     layoutRunRef.current = runId
 
@@ -636,12 +680,13 @@ export function AppShell({
                 : new Set()
             }
             visibleEdges={visibleGraphEdges}
-            highlightedEdgeIds={showRelationshipGraph ? relationshipPathEdgeIds : new Set()}
-            selectedPersonId={selectedPersonId ?? ''}
-            selectedEdgeId={selectedEdgeId}
-            layoutMode={layoutMode}
-            autoCenter={false}
-            flyToPersonRequest={flyToPersonRequest}
+          highlightedEdgeIds={showRelationshipGraph ? relationshipPathEdgeIds : new Set()}
+          selectedPersonId={selectedPersonId ?? ''}
+          selectedEdgeId={selectedEdgeId}
+          layoutMode={layoutMode}
+          layoutAlgorithm={layoutAlgorithm}
+          autoCenter={false}
+          flyToPersonRequest={flyToPersonRequest}
             onSelectPerson={(id) => handleSelectPerson(id)}
             onSelectEdge={(id) => {
               setSelectedEdgeId(id)
@@ -967,6 +1012,23 @@ export function AppShell({
                 <span className="floating-controls__chevron">
                   {relationshipDialogCollapsed ? '+' : '-'}
                 </span>
+                <button
+                  type="button"
+                  className="floating-controls__clear-button"
+                  aria-label="Clear relationship finder"
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    clearRelationshipSelection()
+                  }}
+                  disabled={
+                    !relationshipFromId &&
+                    !relationshipToId &&
+                    !relationshipFromQuery &&
+                    !relationshipToQuery
+                  }
+                >
+                  ×
+                </button>
               </div>
             </div>
             {!relationshipDialogCollapsed && (
@@ -1046,12 +1108,24 @@ export function AppShell({
                   ) : (
                     <p>Connected in the current graph.</p>
                   )}
-                  {relationshipResult.socialLabel && (
+                  {relationshipResult.socialLabels ? (
+                    <p>
+                      Social: {relationshipResult.socialLabels.en} /{' '}
+                      {relationshipResult.socialLabels.taLatin} /{' '}
+                      {relationshipResult.socialLabels.hiLatin}
+                    </p>
+                  ) : relationshipResult.socialLabel ? (
                     <p>Social: {relationshipResult.socialLabel}</p>
-                  )}
+                  ) : null}
                   {relationshipResult.labels && (
                     <p>
                       Tamil: {relationshipResult.labels.ta} · Hindi: {relationshipResult.labels.hi}
+                    </p>
+                  )}
+                  {relationshipResult.socialLabels && (
+                    <p>
+                      Social Tamil: {relationshipResult.socialLabels.ta} · Social Hindi:{' '}
+                      {relationshipResult.socialLabels.hi}
                     </p>
                   )}
                   {bloodPath.length > 1 ? (

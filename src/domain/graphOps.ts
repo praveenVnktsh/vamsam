@@ -15,8 +15,10 @@ import {
 } from './graph'
 import {
   labelsForRelation,
+  labelsForSocialRelation,
   type CanonicalRelationKey,
   type KinshipLabelSet,
+  type SocialRelationKey,
 } from './kinship'
 
 function getAttrStringArray(entity: GraphEntity, key: string): string[] {
@@ -51,6 +53,7 @@ export type ResolvedRelationship = {
   labels?: KinshipLabelSet
   path: string[]
   socialLabel?: string
+  socialLabels?: KinshipLabelSet
 }
 
 const LAYOUT_GRID_X = 24 / 10
@@ -178,6 +181,28 @@ export function fullName(
 ): string {
   const combined = `${person.firstName.trim()} ${person.lastName.trim()}`.trim()
   return combined || person.label
+}
+
+export function personInitials(
+  person: Pick<PersonView, 'firstName' | 'lastName' | 'label' | 'nickname'>,
+): string {
+  const first = person.firstName.trim()
+  const last = person.lastName.trim()
+
+  const firstInitial = first.charAt(0)
+  const lastInitial = last.charAt(0)
+  const combined = `${firstInitial}${lastInitial}`.trim().toUpperCase()
+  if (combined) return combined
+
+  const fallback = (person.nickname.trim() || person.label.trim()).replace(/\s+/g, ' ')
+  if (!fallback) return '?'
+
+  const parts = fallback.split(' ').filter(Boolean)
+  if (parts.length === 1) {
+    return parts[0].slice(0, 2).toUpperCase()
+  }
+
+  return `${parts[0].charAt(0)}${parts[1].charAt(0)}`.toUpperCase()
 }
 
 export function shouldTraversePredicate(
@@ -1125,38 +1150,121 @@ type FamilyUnitSpec = {
 }
 
 function organicLayoutPositions(
-  graph: GraphSchema,
+  _graph: GraphSchema,
   layoutNodes: Map<string, LayoutNodeSpec>,
   layoutEdges: LayoutEdgeSpec[],
-  familyUnits: FamilyUnitSpec[],
+  _familyUnits: FamilyUnitSpec[],
   compact: boolean,
 ) {
-  const peopleById = personMap(graphPeople(graph))
   const positions = new Map<string, { x: number; y: number }>()
   const nodeIds = Array.from(layoutNodes.keys())
+  const parentLikePredicates = new Set<EdgePredicate>([
+    EdgePredicate.PARENT_OF,
+    EdgePredicate.GUARDIAN_OF,
+    EdgePredicate.STEP_PARENT_OF,
+  ])
+  const childrenByParent = new Map<string, string[]>()
+  const incomingParentCount = new Map<string, number>(nodeIds.map((nodeId) => [nodeId, 0]))
+  const undirectedAdjacency = new Map<string, string[]>(nodeIds.map((nodeId) => [nodeId, []]))
+
+  for (const edge of layoutEdges) {
+    const sourceId = edge.sources[0]
+    const targetId = edge.targets[0]
+    if (!sourceId || !targetId) continue
+
+    undirectedAdjacency.set(sourceId, [...(undirectedAdjacency.get(sourceId) ?? []), targetId])
+    undirectedAdjacency.set(targetId, [...(undirectedAdjacency.get(targetId) ?? []), sourceId])
+
+    if (!parentLikePredicates.has(edge.predicate)) continue
+
+    childrenByParent.set(sourceId, [...(childrenByParent.get(sourceId) ?? []), targetId])
+    incomingParentCount.set(targetId, (incomingParentCount.get(targetId) ?? 0) + 1)
+  }
+
+  let roots = nodeIds.filter((nodeId) => (incomingParentCount.get(nodeId) ?? 0) === 0)
+  if (roots.length === 0 && nodeIds.length > 0) {
+    const minIncoming = Math.min(...incomingParentCount.values())
+    roots = nodeIds.filter((nodeId) => (incomingParentCount.get(nodeId) ?? 0) === minIncoming)
+  }
+
+  const depthByNode = new Map<string, number>()
+  const queue = roots.map((nodeId) => ({ nodeId, depth: 0 }))
+  for (const root of roots) {
+    depthByNode.set(root, 0)
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+
+    for (const childId of childrenByParent.get(current.nodeId) ?? []) {
+      const nextDepth = current.depth + 1
+      const existingDepth = depthByNode.get(childId)
+      if (existingDepth !== undefined && existingDepth <= nextDepth) continue
+      depthByNode.set(childId, nextDepth)
+      queue.push({ nodeId: childId, depth: nextDepth })
+    }
+  }
+
+  const partnerEdges = layoutEdges.filter((edge) => edge.predicate === EdgePredicate.PARTNER_OF)
+  for (let index = 0; index < 4; index += 1) {
+    for (const edge of partnerEdges) {
+      const sourceId = edge.sources[0]
+      const targetId = edge.targets[0]
+      const sourceDepth = depthByNode.get(sourceId)
+      const targetDepth = depthByNode.get(targetId)
+
+      if (sourceDepth !== undefined && targetDepth === undefined) {
+        depthByNode.set(targetId, sourceDepth)
+      } else if (targetDepth !== undefined && sourceDepth === undefined) {
+        depthByNode.set(sourceId, targetDepth)
+      }
+    }
+  }
+
+  const fallbackQueue = Array.from(depthByNode.keys())
+  while (fallbackQueue.length > 0) {
+    const currentId = fallbackQueue.shift()
+    if (!currentId) continue
+    const currentDepth = depthByNode.get(currentId)
+    if (currentDepth === undefined) continue
+
+    for (const neighborId of undirectedAdjacency.get(currentId) ?? []) {
+      if (depthByNode.has(neighborId)) continue
+      depthByNode.set(neighborId, currentDepth + 1)
+      fallbackQueue.push(neighborId)
+    }
+  }
 
   for (const nodeId of nodeIds) {
-    if (nodeId.startsWith('family:')) {
-      const unit = familyUnits.find((family) => family.id === nodeId)
-      const members = unit?.memberIds
-        .map((memberId) => peopleById.get(memberId))
-        .filter((person): person is PersonView => Boolean(person)) ?? []
-      const avgX =
-        members.length > 0
-          ? members.reduce((sum, person) => sum + person.x, 0) / members.length
-          : 24
-      const avgY =
-        members.length > 0
-          ? members.reduce((sum, person) => sum + person.y, 0) / members.length
-          : 24
-      positions.set(nodeId, { x: avgX, y: avgY })
-      continue
+    if (!depthByNode.has(nodeId)) {
+      depthByNode.set(nodeId, roots.length > 0 ? 1 : 0)
     }
+  }
 
-    const person = peopleById.get(nodeId)
-    positions.set(nodeId, {
-      x: person?.x ?? 24,
-      y: person?.y ?? 24,
+  const levels = new Map<number, string[]>()
+  for (const nodeId of nodeIds) {
+    const depth = depthByNode.get(nodeId) ?? 0
+    levels.set(depth, [...(levels.get(depth) ?? []), nodeId])
+  }
+
+  const sortedLevels = Array.from(levels.entries()).sort((left, right) => left[0] - right[0])
+  const radiusStep = compact ? 18 : 22
+  const rootRadius = compact ? 6 : 8
+
+  for (const [depth, levelNodeIds] of sortedLevels) {
+    const ordered = [...levelNodeIds].sort()
+    const radius = depth === 0 ? rootRadius : rootRadius + depth * radiusStep
+    const angleOffset = depth * 0.45
+
+    ordered.forEach((nodeId, index) => {
+      const angle =
+        ordered.length === 1 ? angleOffset : angleOffset + (Math.PI * 2 * index) / ordered.length
+
+      positions.set(nodeId, {
+        x: 24 + Math.cos(angle) * radius,
+        y: 24 + Math.sin(angle) * radius,
+      })
     })
   }
 
@@ -1825,7 +1933,7 @@ function inferSexLabel<T extends string>(sex: string, maleLabel: T, femaleLabel:
 function buildResolvedRelationship(
   key: CanonicalRelationKey,
   path: string[],
-  socialLabel?: string,
+  socialKey?: SocialRelationKey,
 ): ResolvedRelationship {
   const labels = labelsForRelation(key)
   return {
@@ -1833,19 +1941,21 @@ function buildResolvedRelationship(
     label: labels.en,
     labels,
     path,
-    socialLabel,
+    socialLabel: socialKey ? labelsForSocialRelation(socialKey).en : undefined,
+    socialLabels: socialKey ? labelsForSocialRelation(socialKey) : undefined,
   }
 }
 
 function buildFreeformRelationship(
   label: string,
   path: string[],
-  socialLabel?: string,
+  socialKey?: SocialRelationKey,
 ): ResolvedRelationship {
   return {
     label,
     path,
-    socialLabel,
+    socialLabel: socialKey ? labelsForSocialRelation(socialKey).en : undefined,
+    socialLabels: socialKey ? labelsForSocialRelation(socialKey) : undefined,
   }
 }
 
@@ -2039,7 +2149,7 @@ function socialAddressForResolvedRelationship(
   from: PersonView,
   to: PersonView,
   relationship: ResolvedRelationship,
-): string | undefined {
+): SocialRelationKey | undefined {
   const normalizedLabel = (
     relationship.labels?.en ??
     relationship.label ??

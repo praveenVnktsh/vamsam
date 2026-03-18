@@ -18,10 +18,13 @@ import {
 import 'reactflow/dist/style.css'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
 import { displayName, graphPeople, personMap, type PersonView } from '../../domain/graphOps'
+import { PersonAvatar } from '../PersonAvatar'
 
 const X_SCALE = 10
 const Y_SCALE = 7
 const SNAP_GRID: [number, number] = [24, 24]
+const ORGANIC_PERSON_RADIUS = 118
+const ORGANIC_FAMILY_RADIUS = 180
 
 function snapTo(value: number, step: number): number {
   return Math.round(value / step) * step
@@ -36,6 +39,7 @@ type TreeCanvasProps = {
   selectedPersonId: string
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
+  layoutAlgorithm: 'hierarchy' | 'organic'
   autoCenter: boolean
   flyToPersonRequest: { nonce: number; personId: string } | null
   onSelectPerson: (id: string) => void
@@ -100,11 +104,15 @@ function PersonNode({ data }: { data: PersonNodeData }) {
         <button type="button" title="Add partner" aria-label="Add partner" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}>↔</button>
         <button type="button" title="Delete node" aria-label="Delete node" className="danger" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}>×</button>
       </div>
-      <Handle id="top" type="target" position={Position.Top} className="flow-handle" />
-      <Handle id="left" type="target" position={Position.Left} className="flow-handle" />
-      <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
-      <Handle id="right" type="source" position={Position.Right} className="flow-handle" />
-      <span className="flow-person-photo">{person.photo}</span>
+      <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
+      <Handle id="target-left" type="target" position={Position.Left} className="flow-handle" />
+      <Handle id="target-bottom" type="target" position={Position.Bottom} className="flow-handle" />
+      <Handle id="target-right" type="target" position={Position.Right} className="flow-handle" />
+      <Handle id="source-top" type="source" position={Position.Top} className="flow-handle" />
+      <Handle id="source-left" type="source" position={Position.Left} className="flow-handle" />
+      <Handle id="source-bottom" type="source" position={Position.Bottom} className="flow-handle" />
+      <Handle id="source-right" type="source" position={Position.Right} className="flow-handle" />
+      <PersonAvatar person={person} className="flow-person-photo" />
       <div>
         <strong>{displayName(person)}</strong>
         <small>{person.years}</small>
@@ -116,10 +124,14 @@ function PersonNode({ data }: { data: PersonNodeData }) {
 function UnionNode({ data }: { data: UnionNodeData }) {
   return (
     <div className="flow-union-node" aria-label={data.label}>
-      <Handle id="top" type="target" position={Position.Top} className="flow-handle" />
-      <Handle id="left" type="target" position={Position.Left} className="flow-handle" />
-      <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
-      <Handle id="right" type="source" position={Position.Right} className="flow-handle" />
+      <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
+      <Handle id="target-left" type="target" position={Position.Left} className="flow-handle" />
+      <Handle id="target-bottom" type="target" position={Position.Bottom} className="flow-handle" />
+      <Handle id="target-right" type="target" position={Position.Right} className="flow-handle" />
+      <Handle id="source-top" type="source" position={Position.Top} className="flow-handle" />
+      <Handle id="source-left" type="source" position={Position.Left} className="flow-handle" />
+      <Handle id="source-bottom" type="source" position={Position.Bottom} className="flow-handle" />
+      <Handle id="source-right" type="source" position={Position.Right} className="flow-handle" />
     </div>
   )
 }
@@ -129,8 +141,14 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
 
   return (
     <div className="flow-family-card">
-      <Handle id="top" type="target" position={Position.Top} className="flow-handle" />
-      <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
+      <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
+      <Handle id="target-left" type="target" position={Position.Left} className="flow-handle" />
+      <Handle id="target-bottom" type="target" position={Position.Bottom} className="flow-handle" />
+      <Handle id="target-right" type="target" position={Position.Right} className="flow-handle" />
+      <Handle id="source-top" type="source" position={Position.Top} className="flow-handle" />
+      <Handle id="source-left" type="source" position={Position.Left} className="flow-handle" />
+      <Handle id="source-bottom" type="source" position={Position.Bottom} className="flow-handle" />
+      <Handle id="source-right" type="source" position={Position.Right} className="flow-handle" />
       <div className="flow-family-card__members">
         {[leftPerson, rightPerson].map((person) => (
           <div
@@ -156,7 +174,7 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
                 onSelectPerson(person.id)
               }}
             >
-              <span className="flow-person-photo">{person.photo}</span>
+              <PersonAvatar person={person} className="flow-person-photo" />
               <span>
                 <strong>{displayName(person)}</strong>
                 <small>{person.years}</small>
@@ -173,6 +191,22 @@ const nodeTypes = {
   person: PersonNode,
   union: UnionNode,
   family: FamilyNode,
+}
+
+function edgeHandlesBetween(
+  source: { x: number; y: number },
+  target: { x: number; y: number },
+) {
+  return verticalEdgeHandlesBetween(source, target)
+}
+
+function verticalEdgeHandlesBetween(
+  source: { x: number; y: number },
+  target: { x: number; y: number },
+) {
+  return target.y >= source.y
+    ? { sourceHandle: 'source-bottom', targetHandle: 'target-top' }
+    : { sourceHandle: 'source-top', targetHandle: 'target-bottom' }
 }
 
 function edgeStyle(predicate: EdgePredicate) {
@@ -286,6 +320,7 @@ export function TreeCanvas({
   selectedPersonId,
   selectedEdgeId,
   layoutMode,
+  layoutAlgorithm,
   autoCenter,
   flyToPersonRequest,
   onSelectPerson,
@@ -354,7 +389,7 @@ export function TreeCanvas({
           id: person.id,
           type: 'person',
           position: { x: person.x * X_SCALE, y: person.y * Y_SCALE },
-          draggable: true,
+          draggable: layoutAlgorithm !== 'organic',
           selectable: true,
           data: {
             person,
@@ -368,7 +403,7 @@ export function TreeCanvas({
         id: unit.id,
         type: 'family',
         position: { x: unit.avgX * X_SCALE, y: unit.avgY * Y_SCALE },
-        draggable: true,
+        draggable: layoutAlgorithm !== 'organic',
         selectable: true,
         data: {
           leftPerson: unit.leftPerson,
@@ -390,7 +425,7 @@ export function TreeCanvas({
       id: person.id,
       type: 'person',
       position: { x: person.x * X_SCALE, y: person.y * Y_SCALE },
-      draggable: true,
+      draggable: layoutAlgorithm !== 'organic',
       selectable: true,
       data: {
         person,
@@ -457,9 +492,40 @@ export function TreeCanvas({
     })
 
     return [...personNodes, ...unionNodes]
-  }, [familyUnits, layoutMode, onPersonQuickAction, onSelectPerson, people, selectedPersonId, visibleEdges])
+  }, [deemphasizedIds, familyUnits, layoutAlgorithm, layoutMode, onPersonQuickAction, onSelectPerson, people, selectedPersonId, visibleEdges])
 
   const flowEdges = useMemo<FlowEdge[]>(() => {
+    const nodeCenters = new Map<string, { x: number; y: number }>()
+    if (layoutMode === 'family') {
+      for (const person of people) {
+        const family = familyByMemberId.get(person.id)
+        if (family) {
+          nodeCenters.set(family.id, {
+            x: family.avgX * X_SCALE,
+            y: family.avgY * Y_SCALE,
+          })
+        } else {
+          nodeCenters.set(person.id, { x: person.x * X_SCALE, y: person.y * Y_SCALE })
+        }
+      }
+    } else {
+      for (const person of people) {
+        nodeCenters.set(person.id, { x: person.x * X_SCALE, y: person.y * Y_SCALE })
+      }
+      const peopleById = personMap(people)
+      for (const edge of visibleEdges) {
+        if (edge.predicate !== EdgePredicate.PARTNER_OF) continue
+        const leftPerson = peopleById.get(edge.src)
+        const rightPerson = peopleById.get(edge.dst)
+        if (!leftPerson || !rightPerson) continue
+        const unionId = `union:${edge.id}`
+        nodeCenters.set(unionId, {
+          x: ((leftPerson.x + rightPerson.x) / 2) * X_SCALE,
+          y: ((leftPerson.y + rightPerson.y) / 2) * Y_SCALE + 18,
+        })
+      }
+    }
+
     if (layoutMode === 'family') {
       const directEdges: FlowEdge[] = []
       const mergedFamilyChildEdges = new Map<
@@ -482,13 +548,17 @@ export function TreeCanvas({
             edge.predicate === EdgePredicate.STEP_PARENT_OF)
         ) {
           const mergedId = `family-child:${sourceNodeId}:${targetNodeId}:${edge.predicate}`
+          const handles = verticalEdgeHandlesBetween(
+            nodeCenters.get(sourceNodeId) ?? { x: 0, y: 0 },
+            nodeCenters.get(targetNodeId) ?? { x: 0, y: 0 },
+          )
           if (!mergedFamilyChildEdges.has(mergedId)) {
             mergedFamilyChildEdges.set(mergedId, {
               id: mergedId,
               source: sourceNodeId,
               target: targetNodeId,
-              sourceHandle: 'bottom',
-              targetHandle: 'top',
+              sourceHandle: handles.sourceHandle,
+              targetHandle: handles.targetHandle,
               type: 'simplebezier',
               label: selectedEdgeId === mergedId ? edge.predicate.replaceAll('_', ' ') : '',
               markerEnd: highlightedEdgeIds.has(edge.id)
@@ -532,12 +602,22 @@ export function TreeCanvas({
           continue
         }
 
+        const handles =
+          sourceNodeId.startsWith('family:') || targetNodeId.startsWith('family:')
+            ? verticalEdgeHandlesBetween(
+                nodeCenters.get(sourceNodeId) ?? { x: 0, y: 0 },
+                nodeCenters.get(targetNodeId) ?? { x: 0, y: 0 },
+              )
+            : edgeHandlesBetween(
+                nodeCenters.get(sourceNodeId) ?? { x: 0, y: 0 },
+                nodeCenters.get(targetNodeId) ?? { x: 0, y: 0 },
+              )
         directEdges.push({
           id: `${edge.id}:${sourceNodeId}:${targetNodeId}`,
           source: sourceNodeId,
           target: targetNodeId,
-          sourceHandle: 'bottom',
-          targetHandle: 'top',
+          sourceHandle: handles.sourceHandle,
+          targetHandle: handles.targetHandle,
           type: 'simplebezier',
           label:
             edge.id === selectedEdgeId ||
@@ -590,7 +670,7 @@ export function TreeCanvas({
     >()
     const unionConnectorEdges: FlowEdge[] = []
 
-    for (const edge of partnerEdges) {
+      for (const edge of partnerEdges) {
       const leftPerson = peopleById.get(edge.src)
       const rightPerson = peopleById.get(edge.dst)
       if (!leftPerson || !rightPerson) continue
@@ -618,12 +698,16 @@ export function TreeCanvas({
         )
       })
 
+      const partnerHandles = edgeHandlesBetween(
+        nodeCenters.get(leftPerson.id) ?? { x: leftPerson.x * X_SCALE, y: leftPerson.y * Y_SCALE },
+        nodeCenters.get(rightPerson.id) ?? { x: rightPerson.x * X_SCALE, y: rightPerson.y * Y_SCALE },
+      )
       unionConnectorEdges.push({
         id: edge.id,
         source: leftPerson.id,
         target: rightPerson.id,
-        sourceHandle: 'right',
-        targetHandle: 'left',
+        sourceHandle: partnerHandles.sourceHandle,
+        targetHandle: partnerHandles.targetHandle,
         type: 'simplebezier',
         style: highlightedEdgeIds.has(edge.id)
           ? highlightedEdgeStyle(EdgePredicate.PARTNER_OF)
@@ -658,13 +742,17 @@ export function TreeCanvas({
         return []
       }
 
+      const handles = edgeHandlesBetween(
+        nodeCenters.get(edge.src) ?? { x: 0, y: 0 },
+        nodeCenters.get(edge.dst) ?? { x: 0, y: 0 },
+      )
       return [
         {
           id: edge.id,
           source: edge.src,
           target: edge.dst,
-          sourceHandle: 'bottom',
-          targetHandle: 'top',
+          sourceHandle: handles.sourceHandle,
+          targetHandle: handles.targetHandle,
           type: 'simplebezier',
           label: edge.id === selectedEdgeId ? edge.predicate.replaceAll('_', ' ') : '',
           markerEnd: highlightedEdgeIds.has(edge.id)
@@ -691,12 +779,17 @@ export function TreeCanvas({
     })
 
     const mergedChildEdges: FlowEdge[] = Array.from(childToUnion.entries()).map(
-      ([childId, union]) => ({
+      ([childId, union]) => {
+        const handles = verticalEdgeHandlesBetween(
+          nodeCenters.get(union.unionId) ?? { x: 0, y: 0 },
+          nodeCenters.get(childId) ?? { x: 0, y: 0 },
+        )
+        return {
         id: `merged:${union.unionId}:${childId}`,
         source: union.unionId,
         target: childId,
-        sourceHandle: 'bottom',
-        targetHandle: 'top',
+        sourceHandle: handles.sourceHandle,
+        targetHandle: handles.targetHandle,
         type: 'simplebezier',
         label:
           selectedEdgeId === `merged:${union.unionId}:${childId}`
@@ -721,7 +814,7 @@ export function TreeCanvas({
         labelBgPadding: [6, 4],
         labelBgBorderRadius: 6,
         selected: selectedEdgeId === `merged:${union.unionId}:${childId}`,
-      }),
+      }},
     )
 
     return [...unionConnectorEdges, ...directEdges, ...mergedChildEdges]
@@ -731,14 +824,270 @@ export function TreeCanvas({
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null)
   const handledFlyNonceRef = useRef<number | null>(null)
+  const organicVelocityRef = useRef(new Map<string, { x: number; y: number }>())
 
   useEffect(() => {
-    setNodes(flowNodes)
-  }, [flowNodes, setNodes])
+    if (layoutAlgorithm !== 'organic') {
+      setNodes(flowNodes)
+      return
+    }
+
+    setNodes((current) => {
+      const currentById = new Map(current.map((node) => [node.id, node]))
+      return flowNodes.map((node) => {
+        const existing = currentById.get(node.id)
+        if (!existing || node.type === 'union') {
+          return node
+        }
+
+        return {
+          ...node,
+          position: existing.position,
+        }
+      })
+    })
+  }, [flowNodes, layoutAlgorithm, setNodes])
 
   useEffect(() => {
     setEdges(flowEdges)
   }, [flowEdges, setEdges])
+
+  useEffect(() => {
+    if (layoutAlgorithm !== 'organic') {
+      organicVelocityRef.current.clear()
+      return
+    }
+
+    let frameId = 0
+
+    const tick = () => {
+      setNodes((current) => {
+        const positionById = new Map(
+          current
+            .filter((node) => node.type !== 'union')
+            .map((node) => [node.id, { x: node.position.x, y: node.position.y }]),
+        )
+        const nodeIds = Array.from(positionById.keys())
+        if (nodeIds.length <= 1) {
+          return current
+        }
+
+        const substeps = 3
+        const repelStrength = layoutMode === 'family' ? 32000 : 24000
+        const springStrength = 0.0064
+        const gravityStrength = 0.0018
+        const radialStrength = layoutMode === 'family' ? 0.026 : 0.022
+        const damping = 0.74
+        const accelerationScale = 0.18
+        const maxVelocity = 6
+        const degreeByNode = new Map<string, number>(nodeIds.map((nodeId) => [nodeId, 0]))
+
+        for (const edge of flowEdges) {
+          if (degreeByNode.has(edge.source)) {
+            degreeByNode.set(edge.source, (degreeByNode.get(edge.source) ?? 0) + 1)
+          }
+          if (degreeByNode.has(edge.target)) {
+            degreeByNode.set(edge.target, (degreeByNode.get(edge.target) ?? 0) + 1)
+          }
+        }
+
+        const maxDegree = Math.max(...degreeByNode.values(), 1)
+
+        for (let step = 0; step < substeps; step += 1) {
+          const forces = new Map(nodeIds.map((nodeId) => [nodeId, { x: 0, y: 0 }]))
+
+          for (let index = 0; index < nodeIds.length; index += 1) {
+            const sourceId = nodeIds[index]
+            const sourcePosition = positionById.get(sourceId)
+            if (!sourcePosition) continue
+
+            for (let innerIndex = index + 1; innerIndex < nodeIds.length; innerIndex += 1) {
+              const targetId = nodeIds[innerIndex]
+              const targetPosition = positionById.get(targetId)
+              if (!targetPosition) continue
+
+              let dx = targetPosition.x - sourcePosition.x
+              let dy = targetPosition.y - sourcePosition.y
+              let distanceSquared = dx * dx + dy * dy
+
+              if (distanceSquared < 1) {
+                dx = 1
+                dy = 1
+                distanceSquared = 2
+              }
+
+              const distance = Math.sqrt(distanceSquared)
+              const force = repelStrength / distanceSquared
+              const fx = (dx / distance) * force
+              const fy = (dy / distance) * force
+              const sourceForce = forces.get(sourceId)
+              const targetForce = forces.get(targetId)
+              if (!sourceForce || !targetForce) continue
+
+              sourceForce.x -= fx
+              sourceForce.y -= fy
+              targetForce.x += fx
+              targetForce.y += fy
+            }
+          }
+
+          for (const edge of flowEdges) {
+            const sourcePosition = positionById.get(edge.source)
+            const targetPosition = positionById.get(edge.target)
+            if (!sourcePosition || !targetPosition) continue
+
+            let dx = targetPosition.x - sourcePosition.x
+            let dy = targetPosition.y - sourcePosition.y
+            let distance = Math.sqrt(dx * dx + dy * dy)
+            if (distance < 1) {
+              dx = 1
+              dy = 1
+              distance = Math.sqrt(2)
+            }
+
+            const isPartner =
+              edge.id.includes(EdgePredicate.PARTNER_OF) || edge.id.startsWith('union:')
+            const desiredDistance = isPartner ? 150 : layoutMode === 'family' ? 190 : 170
+            const delta = distance - desiredDistance
+            const force = delta * springStrength
+            const fx = (dx / distance) * force
+            const fy = (dy / distance) * force
+            const sourceForce = forces.get(edge.source)
+            const targetForce = forces.get(edge.target)
+            if (!sourceForce || !targetForce) continue
+
+            sourceForce.x += fx
+            sourceForce.y += fy
+            targetForce.x -= fx
+            targetForce.y -= fy
+          }
+
+          const centroidX =
+            nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.x ?? 0), 0) /
+            nodeIds.length
+          const centroidY =
+            nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.y ?? 0), 0) /
+            nodeIds.length
+
+          const minTargetRadius = layoutMode === 'family' ? 120 : 90
+          const maxTargetRadius =
+            minTargetRadius + Math.max(120, Math.sqrt(nodeIds.length) * (layoutMode === 'family' ? 46 : 40))
+
+          for (const nodeId of nodeIds) {
+            const position = positionById.get(nodeId)
+            const force = forces.get(nodeId)
+            if (!position || !force) continue
+
+            force.x += (centroidX - position.x) * gravityStrength
+            force.y += (centroidY - position.y) * gravityStrength
+
+            const degree = degreeByNode.get(nodeId) ?? 0
+            const normalizedDegree = maxDegree > 0 ? degree / maxDegree : 0
+            const leafBias = 1 - normalizedDegree
+            const targetRadius =
+              minTargetRadius + Math.pow(leafBias, 1.35) * (maxTargetRadius - minTargetRadius)
+            let radialDx = position.x - centroidX
+            let radialDy = position.y - centroidY
+            let radialDistance = Math.sqrt(radialDx * radialDx + radialDy * radialDy)
+            if (radialDistance < 1) {
+              radialDx = 1
+              radialDy = 0
+              radialDistance = 1
+            }
+            const radialDelta = targetRadius - radialDistance
+            force.x += (radialDx / radialDistance) * radialDelta * radialStrength
+            force.y += (radialDy / radialDistance) * radialDelta * radialStrength
+
+            const velocity = organicVelocityRef.current.get(nodeId) ?? { x: 0, y: 0 }
+            velocity.x = velocity.x * damping + force.x * accelerationScale
+            velocity.y = velocity.y * damping + force.y * accelerationScale
+            velocity.x = Math.max(-maxVelocity, Math.min(maxVelocity, velocity.x))
+            velocity.y = Math.max(-maxVelocity, Math.min(maxVelocity, velocity.y))
+            organicVelocityRef.current.set(nodeId, velocity)
+
+            position.x += velocity.x
+            position.y += velocity.y
+          }
+
+          for (let index = 0; index < nodeIds.length; index += 1) {
+            const sourceId = nodeIds[index]
+            const sourcePosition = positionById.get(sourceId)
+            const sourceNode = current.find((node) => node.id === sourceId)
+            if (!sourcePosition || !sourceNode) continue
+
+            for (let innerIndex = index + 1; innerIndex < nodeIds.length; innerIndex += 1) {
+              const targetId = nodeIds[innerIndex]
+              const targetPosition = positionById.get(targetId)
+              const targetNode = current.find((node) => node.id === targetId)
+              if (!targetPosition || !targetNode) continue
+
+              let dx = targetPosition.x - sourcePosition.x
+              let dy = targetPosition.y - sourcePosition.y
+              let distance = Math.sqrt(dx * dx + dy * dy)
+              if (distance < 1) {
+                dx = 1
+                dy = 1
+                distance = Math.sqrt(2)
+              }
+
+              const sourceRadius =
+                sourceNode.type === 'family' ? ORGANIC_FAMILY_RADIUS : ORGANIC_PERSON_RADIUS
+              const targetRadius =
+                targetNode.type === 'family' ? ORGANIC_FAMILY_RADIUS : ORGANIC_PERSON_RADIUS
+              const minDistance = sourceRadius + targetRadius
+
+              if (distance >= minDistance) continue
+
+              const overlap = (minDistance - distance) / 2
+              const ux = dx / distance
+              const uy = dy / distance
+
+              sourcePosition.x -= ux * overlap
+              sourcePosition.y -= uy * overlap
+              targetPosition.x += ux * overlap
+              targetPosition.y += uy * overlap
+
+              const sourceVelocity = organicVelocityRef.current.get(sourceId)
+              if (sourceVelocity) {
+                sourceVelocity.x *= 0.5
+                sourceVelocity.y *= 0.5
+              }
+              const targetVelocity = organicVelocityRef.current.get(targetId)
+              if (targetVelocity) {
+                targetVelocity.x *= 0.5
+                targetVelocity.y *= 0.5
+              }
+            }
+          }
+        }
+
+        const next = current.map((node) => {
+          if (node.type === 'union') return node
+
+          const position = positionById.get(node.id)
+          if (!position) return node
+
+          return {
+            ...node,
+            position: {
+              x: position.x,
+              y: position.y,
+            },
+          }
+        })
+
+        return layoutMode === 'family' ? next : recomputeUnionNodes(next, visibleEdges)
+      })
+
+      frameId = window.requestAnimationFrame(tick)
+    }
+
+    frameId = window.requestAnimationFrame(tick)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+    }
+  }, [flowEdges, layoutAlgorithm, layoutMode, setNodes, visibleEdges])
 
   useEffect(() => {
     if (!autoCenter) return
@@ -790,7 +1139,7 @@ export function TreeCanvas({
         snapToGrid
         snapGrid={SNAP_GRID}
         selectNodesOnDrag={false}
-        nodesDraggable
+        nodesDraggable={layoutAlgorithm !== 'organic'}
         nodesConnectable={false}
         elementsSelectable
         panOnDrag
@@ -818,6 +1167,7 @@ export function TreeCanvas({
         }}
         onEdgesChange={onEdgesChange}
         onNodeDragStop={(_, node) => {
+          if (layoutAlgorithm === 'organic') return
           const snappedX = snapTo(node.position.x, SNAP_GRID[0])
           const snappedY = snapTo(node.position.y, SNAP_GRID[1])
           if (node.type === 'family') {
