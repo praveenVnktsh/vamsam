@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import {
   applyNodeChanges,
   Background,
@@ -10,6 +10,7 @@ import {
   ReactFlow,
   useEdgesState,
   useNodesState,
+  type ReactFlowInstance,
   type Edge as FlowEdge,
   type NodeChange,
   type Node as FlowNode,
@@ -33,6 +34,7 @@ type TreeCanvasProps = {
   selectedPersonId: string
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
+  autoCenter: boolean
   onSelectPerson: (id: string) => void
   onSelectEdge: (id: string | null) => void
   onMovePerson: (id: string, x: number, y: number) => void
@@ -186,6 +188,7 @@ export function TreeCanvas({
   selectedPersonId,
   selectedEdgeId,
   layoutMode,
+  autoCenter,
   onSelectPerson,
   onSelectEdge,
   onMovePerson,
@@ -559,6 +562,7 @@ export function TreeCanvas({
 
   const [nodes, setNodes] = useNodesState(flowNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
+  const flowInstanceRef = useRef<ReactFlowInstance | null>(null)
 
   useEffect(() => {
     setNodes(flowNodes)
@@ -567,6 +571,21 @@ export function TreeCanvas({
   useEffect(() => {
     setEdges(flowEdges)
   }, [flowEdges, setEdges])
+
+  useEffect(() => {
+    if (!autoCenter) return
+    const instance = flowInstanceRef.current
+    if (!instance || nodes.length === 0) return
+
+    requestAnimationFrame(() => {
+      void instance.fitView({
+        padding: 0.24,
+        duration: 280,
+        nodes: nodes.map((node) => ({ id: node.id })),
+        maxZoom: 1.15,
+      })
+    })
+  }, [autoCenter, nodes])
 
   return (
     <div className="canvas">
@@ -588,6 +607,9 @@ export function TreeCanvas({
         minZoom={0.35}
         maxZoom={1.6}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
+        onInit={(instance) => {
+          flowInstanceRef.current = instance
+        }}
         onNodeClick={(_, node) => {
           if (node.type === 'person') {
             onSelectPerson(node.id)

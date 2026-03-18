@@ -1,4 +1,4 @@
-import type { ChangeEvent } from 'react'
+import type { CSSProperties, ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { sampleGraph } from '../data/sampleGraph'
 import { clearGraph, loadGraph, saveGraph } from '../data/storage'
@@ -7,14 +7,18 @@ import {
   addConnectedPerson,
   addConnection,
   addRelative,
+  addStandalonePerson,
   autoLayoutGraph,
   deleteEdge,
   graphHasRenderablePeople,
   graphPeople,
+  hardDeletePerson,
   personMap,
   reverseEdge,
   resolveRelationship,
+  sanitizeGraphForCoreRelationships,
   shortestBloodPath,
+  softDeletePerson,
   shortestPersonPath,
   updateEdge,
   updatePersonAttr,
@@ -28,45 +32,136 @@ import { Inspector } from '../features/inspector/Inspector'
 const depthOptions = [1, 2, 3, 99] as const
 
 function shouldReplacePersistedGraph(persisted: GraphSchema): boolean {
-  const treeName = String(persisted.metadata.treeName ?? '')
-  const source = String(persisted.metadata.source ?? '')
-  const entityIds = new Set(persisted.entities.map((entity) => entity.id))
-
-  return (
-    source !== 'user spreadsheet' ||
-    treeName === 'Alvarez-Reed Family' ||
-    !entityIds.has('person:vakulambal') ||
-    !entityIds.has('person:erumbi_santhanam_iyengar') ||
-    !entityIds.has('person:shyam_iyengar')
-  )
+  return String(persisted.metadata.source ?? '') !== 'blank-slate-v2'
 }
 
 export function AppShell() {
+  const centerStageRef = useRef<HTMLElement | null>(null)
+  const viewControlsRef = useRef<HTMLDivElement | null>(null)
+  const relationshipDialogRef = useRef<HTMLDivElement | null>(null)
   const [graph, setGraph] = useState<GraphSchema>(sampleGraph)
   const [isHydrated, setIsHydrated] = useState(false)
   const [leftCollapsed, setLeftCollapsed] = useState(true)
   const [rightCollapsed, setRightCollapsed] = useState(true)
+  const [rightSidebarWidth, setRightSidebarWidth] = useState(440)
+  const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false)
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [search, setSearch] = useState('')
   const [depth, setDepth] = useState<(typeof depthOptions)[number]>(99)
-  const [viewMode, setViewMode] = useState<'overview' | 'focus' | 'relationship'>('overview')
+  const [viewMode, setViewMode] = useState<'overview' | 'focus'>('overview')
+  const [showRelationshipGraph, setShowRelationshipGraph] = useState(false)
   const [includePartners, setIncludePartners] = useState(true)
-  const [includeNonBlood, setIncludeNonBlood] = useState(true)
-  const [includeSiblings, setIncludeSiblings] = useState(false)
+  const includeNonBlood = false
   const [compactLayout, setCompactLayout] = useState(true)
   const [layoutMode, setLayoutMode] = useState<'person' | 'family'>('family')
-  const [viewControlsCollapsed, setViewControlsCollapsed] = useState(false)
+  const [viewControlsCollapsed, setViewControlsCollapsed] = useState(true)
+  const [relationshipDialogCollapsed, setRelationshipDialogCollapsed] = useState(true)
+  const [viewControlsPosition, setViewControlsPosition] = useState<{ x: number; y: number } | null>(
+    null,
+  )
+  const [relationshipDialogPosition, setRelationshipDialogPosition] = useState<{
+    x: number
+    y: number
+  } | null>(null)
   const [relationshipFromId, setRelationshipFromId] = useState<string>('')
   const [relationshipToId, setRelationshipToId] = useState<string>('')
+  const [relationshipFromQuery, setRelationshipFromQuery] = useState('')
+  const [relationshipToQuery, setRelationshipToQuery] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const graphRef = useRef(graph)
   const layoutRunRef = useRef(0)
+  const overlayDragRef = useRef<{
+    kind: 'view' | 'relationship'
+    offsetX: number
+    offsetY: number
+    startX: number
+    startY: number
+  } | null>(null)
+  const suppressViewToggleClickRef = useRef(false)
+  const suppressRelationshipToggleClickRef = useRef(false)
   const depthIndex = depthOptions.indexOf(depth)
+
+  function snapToNearestCorner(
+    stageWidth: number,
+    stageHeight: number,
+    overlayWidth: number,
+    overlayHeight: number,
+    position: { x: number; y: number },
+  ) {
+    const inset = 12
+    const maxX = Math.max(inset, stageWidth - overlayWidth - inset)
+    const maxY = Math.max(inset, stageHeight - overlayHeight - inset)
+    const left = position.x < stageWidth / 2 ? inset : maxX
+    const top = position.y < stageHeight / 2 ? inset : maxY
+
+    return { x: left, y: top }
+  }
 
   useEffect(() => {
     graphRef.current = graph
   }, [graph])
+
+  useEffect(() => {
+    const stage = centerStageRef.current
+    const viewElement = viewControlsRef.current
+    const relationshipElement = relationshipDialogRef.current
+
+    if (!stage || !viewElement || !relationshipElement) return
+
+    setViewControlsPosition((current) =>
+      snapToNearestCorner(
+        stage.clientWidth,
+        stage.clientHeight,
+        viewElement.offsetWidth,
+        viewElement.offsetHeight,
+        current ?? {
+          x: Math.max(12, stage.clientWidth - viewElement.offsetWidth - 18),
+          y: 18,
+        },
+      ),
+    )
+
+    setRelationshipDialogPosition((current) =>
+      snapToNearestCorner(
+        stage.clientWidth,
+        stage.clientHeight,
+        relationshipElement.offsetWidth,
+        relationshipElement.offsetHeight,
+        current ?? {
+          x: Math.max(12, stage.clientWidth - relationshipElement.offsetWidth - 18),
+          y: Math.max(18, stage.clientHeight - relationshipElement.offsetHeight - 18),
+        },
+      ),
+    )
+  }, [
+    leftCollapsed,
+    relationshipDialogCollapsed,
+    rightCollapsed,
+    rightSidebarWidth,
+    viewControlsCollapsed,
+  ])
+
+  useEffect(() => {
+    if (!isResizingRightSidebar) return
+
+    function handleMouseMove(event: MouseEvent) {
+      const nextWidth = window.innerWidth - event.clientX
+      setRightSidebarWidth(Math.max(340, Math.min(720, nextWidth)))
+    }
+
+    function handleMouseUp() {
+      setIsResizingRightSidebar(false)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+  }, [isResizingRightSidebar])
 
   useEffect(() => {
     let ignore = false
@@ -82,7 +177,7 @@ export function AppShell() {
             setGraph(sampleGraph)
             await saveGraph(sampleGraph)
           } else {
-            setGraph(persisted)
+            setGraph(sanitizeGraphForCoreRelationships(persisted))
           }
         } catch {
           setGraph(sampleGraph)
@@ -107,18 +202,104 @@ export function AppShell() {
     void saveGraph(graph)
   }, [graph, isHydrated])
 
+  function startOverlayDrag(
+    kind: 'view' | 'relationship',
+    event: React.MouseEvent<HTMLDivElement>,
+  ) {
+    event.preventDefault()
+    event.stopPropagation()
+    const stage = centerStageRef.current
+    const overlay =
+      kind === 'view' ? viewControlsRef.current : relationshipDialogRef.current
+    if (!stage || !overlay) return
+    const stageElement = stage
+    const overlayElement = overlay
+
+    const overlayRect = overlayElement.getBoundingClientRect()
+    const drag = {
+      kind,
+      offsetX: event.clientX - overlayRect.left,
+      offsetY: event.clientY - overlayRect.top,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    overlayDragRef.current = drag
+    let didDrag = false
+    let lastPosition =
+      kind === 'view'
+        ? viewControlsPosition ?? { x: 12, y: 12 }
+        : relationshipDialogPosition ?? { x: 12, y: 12 }
+
+    function handleMouseMove(moveEvent: MouseEvent) {
+      const stageRect = stageElement.getBoundingClientRect()
+      const nextX = moveEvent.clientX - stageRect.left - drag.offsetX
+      const nextY = moveEvent.clientY - stageRect.top - drag.offsetY
+      const maxX = Math.max(12, stageElement.clientWidth - overlayElement.offsetWidth - 12)
+      const maxY = Math.max(12, stageElement.clientHeight - overlayElement.offsetHeight - 12)
+      const nextPosition = {
+        x: Math.max(12, Math.min(maxX, nextX)),
+        y: Math.max(12, Math.min(maxY, nextY)),
+      }
+      lastPosition = nextPosition
+
+      if (
+        Math.abs(moveEvent.clientX - drag.startX) > 3 ||
+        Math.abs(moveEvent.clientY - drag.startY) > 3
+      ) {
+        didDrag = true
+        suppressViewToggleClickRef.current = kind === 'view'
+        suppressRelationshipToggleClickRef.current = kind === 'relationship'
+      }
+
+      if (kind === 'view') {
+        setViewControlsPosition(nextPosition)
+      } else {
+        setRelationshipDialogPosition(nextPosition)
+      }
+    }
+
+    function handleMouseUp() {
+      if (didDrag) {
+        const snappedPosition = snapToNearestCorner(
+          stageElement.clientWidth,
+          stageElement.clientHeight,
+          overlayElement.offsetWidth,
+          overlayElement.offsetHeight,
+          lastPosition,
+        )
+
+        if (kind === 'view') {
+          setViewControlsPosition(snappedPosition)
+        } else {
+          setRelationshipDialogPosition(snappedPosition)
+        }
+      }
+
+      overlayDragRef.current = null
+      window.setTimeout(() => {
+        suppressViewToggleClickRef.current = false
+        suppressRelationshipToggleClickRef.current = false
+      }, 0)
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }
+
   const people = useMemo(() => graphPeople(graph), [graph])
   const peopleById = useMemo(() => personMap(people), [people])
   const selectedPerson = selectedPersonId ? peopleById.get(selectedPersonId) ?? null : null
 
   const visibleIds = useMemo(
     () => {
-      if (viewMode === 'overview') {
-        return new Set(people.map((person) => person.id))
+      if (showRelationshipGraph && relationshipFromId && relationshipToId) {
+        return new Set(shortestPersonPath(graph, relationshipFromId, relationshipToId))
       }
 
-      if (viewMode === 'relationship' && relationshipFromId && relationshipToId) {
-        return new Set(shortestPersonPath(graph, relationshipFromId, relationshipToId))
+      if (viewMode === 'overview') {
+        return new Set(people.map((person) => person.id))
       }
 
       return visiblePersonIds(
@@ -128,7 +309,6 @@ export function AppShell() {
         false,
         includePartners,
         includeNonBlood,
-        includeSiblings,
       )
     },
     [
@@ -136,25 +316,35 @@ export function AppShell() {
       graph,
       includeNonBlood,
       includePartners,
-      includeSiblings,
       people,
       relationshipFromId,
       relationshipToId,
       selectedPerson,
+      showRelationshipGraph,
       viewMode,
     ],
   )
 
   const visibleGraphEdges = useMemo(
-    () =>
-      getVisibleEdges(
+    () => {
+      if (showRelationshipGraph) {
+        return getVisibleEdges(graph, visibleIds, true, includeNonBlood)
+      }
+
+      return getVisibleEdges(
         graph,
         visibleIds,
         includePartners,
         includeNonBlood,
-        includeSiblings,
-      ),
-    [graph, includeNonBlood, includePartners, includeSiblings, visibleIds],
+      )
+    },
+    [
+      graph,
+      includeNonBlood,
+      includePartners,
+      showRelationshipGraph,
+      visibleIds,
+    ],
   )
 
   const filteredPeople = useMemo(() => {
@@ -167,7 +357,8 @@ export function AppShell() {
       return (
         person.label.toLowerCase().includes(normalized) ||
         person.branch.toLowerCase().includes(normalized) ||
-        person.roleLabel.toLowerCase().includes(normalized)
+        person.birthPlace.toLowerCase().includes(normalized) ||
+        person.currentResidence.toLowerCase().includes(normalized)
       )
     })
   }, [people, search, visibleIds])
@@ -184,6 +375,16 @@ export function AppShell() {
   }, [sortedPeople])
 
   useEffect(() => {
+    const person = peopleById.get(relationshipFromId)
+    if (person) setRelationshipFromQuery(person.preferredName)
+  }, [peopleById, relationshipFromId])
+
+  useEffect(() => {
+    const person = peopleById.get(relationshipToId)
+    if (person) setRelationshipToQuery(person.preferredName)
+  }, [peopleById, relationshipToId])
+
+  useEffect(() => {
     if (!isHydrated) return
 
     const runId = layoutRunRef.current + 1
@@ -194,10 +395,9 @@ export function AppShell() {
         graphRef.current,
         selectedPersonId ?? '',
         depth,
-        viewMode === 'overview',
+        viewMode === 'overview' && !showRelationshipGraph,
         includePartners,
         includeNonBlood,
-        includeSiblings,
       )
 
       const nextGraph = await autoLayoutGraph(graphRef.current, scopedVisibleIds, {
@@ -214,12 +414,12 @@ export function AppShell() {
     depth,
     includeNonBlood,
     includePartners,
-    includeSiblings,
     isHydrated,
     layoutMode,
     relationshipFromId,
     relationshipToId,
     selectedPersonId,
+    showRelationshipGraph,
     viewMode,
   ])
 
@@ -227,7 +427,6 @@ export function AppShell() {
     if (selectedPersonId && selectedPersonId !== id) {
       setRelationshipFromId(selectedPersonId)
       setRelationshipToId(id)
-      setViewMode('relationship')
     } else if (!relationshipFromId || relationshipFromId === id) {
       setRelationshipFromId(id)
     } else {
@@ -239,9 +438,16 @@ export function AppShell() {
     setRightCollapsed(false)
   }
 
-  function handleAddRelative(type: 'child' | 'partner') {
+  function handleAddRelative(type: 'parent' | 'child' | 'partner' | 'sibling') {
     if (!selectedPerson) return
     const result = addRelative(graph, selectedPerson, type)
+    setGraph(result.graph)
+    setSelectedPersonId(result.newPersonId)
+    setRightCollapsed(false)
+  }
+
+  function handleCreateStandalonePerson(defaultName = 'New Person') {
+    const result = addStandalonePerson(graph, defaultName)
     setGraph(result.graph)
     setSelectedPersonId(result.newPersonId)
     setRightCollapsed(false)
@@ -282,8 +488,11 @@ export function AppShell() {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result)) as GraphSchema
-        validateGraph(parsed)
-        setGraph(parsed)
+        const sanitized = sanitizeGraphForCoreRelationships(parsed)
+        validateGraph(sanitized)
+        setGraph(sanitized)
+        setSelectedPersonId(null)
+        setRightCollapsed(true)
       } catch {
         window.alert('That file is not a valid graph export.')
       }
@@ -299,10 +508,6 @@ export function AppShell() {
     setRightCollapsed(true)
   }
 
-  if (!graphHasRenderablePeople(graph)) {
-    return null
-  }
-
   const relationshipResult =
     relationshipFromId && relationshipToId
       ? resolveRelationship(graph, relationshipFromId, relationshipToId)
@@ -314,6 +519,34 @@ export function AppShell() {
 
   const relationshipFrom = peopleById.get(relationshipFromId)
   const relationshipTo = peopleById.get(relationshipToId)
+  const filteredFromPeople = sortedPeople.filter((person) =>
+    person.preferredName.toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()),
+  )
+  const filteredToPeople = sortedPeople.filter((person) =>
+    person.preferredName.toLowerCase().includes(relationshipToQuery.trim().toLowerCase()),
+  )
+  const viewControlsStyle: CSSProperties | undefined = viewControlsPosition
+    ? {
+        left: `${viewControlsPosition.x}px`,
+        top: `${viewControlsPosition.y}px`,
+      }
+    : undefined
+  const relationshipDialogStyle: CSSProperties | undefined = relationshipDialogPosition
+    ? {
+        left: `${relationshipDialogPosition.x}px`,
+        top: `${relationshipDialogPosition.y}px`,
+      }
+    : undefined
+  const workspaceStyle: CSSProperties = {
+    '--right-sidebar-width': `${rightSidebarWidth}px`,
+    gridTemplateColumns: leftCollapsed
+      ? rightCollapsed
+        ? '28px minmax(0, 1fr) 28px'
+        : `28px minmax(0, 1fr) ${rightSidebarWidth}px`
+      : rightCollapsed
+        ? '320px minmax(0, 1fr) 28px'
+        : `320px minmax(0, 1fr) ${rightSidebarWidth}px`,
+  } as CSSProperties
 
   return (
     <div className="app">
@@ -321,6 +554,7 @@ export function AppShell() {
         className={`workspace${leftCollapsed ? ' left-collapsed' : ''}${
           rightCollapsed ? ' right-collapsed' : ''
         }`}
+        style={workspaceStyle}
       >
         <aside className="left-sidebar">
           <button
@@ -354,15 +588,35 @@ export function AppShell() {
 
           <div className="left-sidebar__section">
             <div className="left-sidebar__actions">
-              <button type="button" onClick={() => handleAddRelative('child')}>
+              <button type="button" onClick={() => handleCreateStandalonePerson('New Person')}>
+                {graphHasRenderablePeople(graph) ? 'Add person' : 'Add first person'}
+              </button>
+              <button type="button" onClick={() => handleAddRelative('child')} disabled={!selectedPerson}>
                 Add child
               </button>
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => handleAddRelative('partner')}
+                disabled={!selectedPerson}
               >
                 Add partner
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => handleAddRelative('parent')}
+                disabled={!selectedPerson}
+              >
+                Add parent
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => handleAddRelative('sibling')}
+                disabled={!selectedPerson}
+              >
+                Add sibling
               </button>
             </div>
           </div>
@@ -400,7 +654,7 @@ export function AppShell() {
             <div className="section-title-row">
               <span className="mini-label">Visible list</span>
               <span className="counts-pill">
-                {graph.entities.length} entities · {graph.edges.length} edges
+                {graph.entities.length} people · {graph.edges.length} links
               </span>
             </div>
 
@@ -420,7 +674,7 @@ export function AppShell() {
                   <span className="person-list-avatar">{person.photo}</span>
                   <span>
                     <strong>{person.preferredName}</strong>
-                    <small>{person.roleLabel}</small>
+                    <small>{person.years || person.currentResidence || person.birthPlace}</small>
                   </span>
                 </button>
               ))}
@@ -430,7 +684,7 @@ export function AppShell() {
           )}
         </aside>
 
-        <section className="center-stage">
+        <section ref={centerStageRef} className="center-stage">
           <TreeCanvas
             graph={graph}
             visibleIds={visibleIds}
@@ -438,6 +692,7 @@ export function AppShell() {
             selectedPersonId={selectedPersonId ?? ''}
             selectedEdgeId={selectedEdgeId}
             layoutMode={layoutMode}
+            autoCenter={showRelationshipGraph}
             onSelectPerson={handleSelectPerson}
             onSelectEdge={setSelectedEdgeId}
             onMovePerson={(id, x, y) =>
@@ -457,33 +712,55 @@ export function AppShell() {
             }
           />
 
+          {!graphHasRenderablePeople(graph) && (
+            <div className="empty-canvas-state">
+              <p className="mini-label">Blank Graph</p>
+              <h2>Add the first person.</h2>
+              <p>Then use quick actions to add parents, children, partners, and siblings through shared parents.</p>
+              <button type="button" onClick={() => handleCreateStandalonePerson('First Person')}>
+                Add first person
+              </button>
+            </div>
+          )}
+
           <div
+            ref={viewControlsRef}
             className={`floating-controls${
               viewControlsCollapsed ? ' floating-controls-collapsed' : ''
             }`}
             role="dialog"
             aria-label="View controls"
+            style={viewControlsStyle}
           >
-            <div className="floating-controls__header">
+            <div
+              className="floating-controls__header overlay-drag-header"
+              onMouseDown={(event) => startOverlayDrag('view', event)}
+              onClick={() => {
+                if (suppressViewToggleClickRef.current) return
+                setViewControlsCollapsed((current) => !current)
+              }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setViewControlsCollapsed((current) => !current)
+                }
+              }}
+              aria-label={
+                viewControlsCollapsed ? 'Expand view controls' : 'Collapse view controls'
+              }
+            >
               <span className="mini-label">View</span>
               <div className="floating-controls__header-actions">
                 <span className="floating-controls__value">
                   {viewMode === 'overview'
                     ? 'Overview'
-                    : viewMode === 'relationship'
-                      ? 'Relationship'
-                      : `${depth} hops`}
+                    : `${depth} hops`}
                 </span>
-                <button
-                  type="button"
-                  className="floating-controls__collapse"
-                  onClick={() => setViewControlsCollapsed((current) => !current)}
-                  aria-label={
-                    viewControlsCollapsed ? 'Expand view controls' : 'Collapse view controls'
-                  }
-                >
+                <span className="floating-controls__chevron">
                   {viewControlsCollapsed ? '+' : '-'}
-                </button>
+                </span>
               </div>
             </div>
 
@@ -494,25 +771,22 @@ export function AppShell() {
                     <button
                       type="button"
                       className={viewMode === 'overview' ? 'view-mode-pill active' : 'view-mode-pill'}
-                      onClick={() => setViewMode('overview')}
+                      onClick={() => {
+                        setViewMode('overview')
+                        setShowRelationshipGraph(false)
+                      }}
                     >
                       Overview
                     </button>
                     <button
                       type="button"
                       className={viewMode === 'focus' ? 'view-mode-pill active' : 'view-mode-pill'}
-                      onClick={() => setViewMode('focus')}
+                      onClick={() => {
+                        setViewMode('focus')
+                        setShowRelationshipGraph(false)
+                      }}
                     >
                       Focus
-                    </button>
-                    <button
-                      type="button"
-                      className={
-                        viewMode === 'relationship' ? 'view-mode-pill active' : 'view-mode-pill'
-                      }
-                      onClick={() => setViewMode('relationship')}
-                    >
-                      Relationship
                     </button>
                   </div>
                   <label className="depth-slider">
@@ -527,8 +801,10 @@ export function AppShell() {
                         setDepth(option)
                         if (option === 99) {
                           setViewMode('overview')
-                        } else if (viewMode !== 'relationship') {
+                          setShowRelationshipGraph(false)
+                        } else {
                           setViewMode('focus')
+                          setShowRelationshipGraph(false)
                         }
                       }}
                     />
@@ -575,22 +851,6 @@ export function AppShell() {
                     />
                     Partners
                   </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={includeNonBlood}
-                      onChange={(event) => setIncludeNonBlood(event.target.checked)}
-                    />
-                    Guardian links
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={includeSiblings}
-                      onChange={(event) => setIncludeSiblings(event.target.checked)}
-                    />
-                    Sibling links
-                  </label>
                 </div>
 
                 <div className="floating-controls__section">
@@ -614,38 +874,91 @@ export function AppShell() {
             )}
           </div>
 
-          <div className="relationship-dialog" role="dialog" aria-label="Relationship finder">
-            <div className="relationship-dialog__header">
+          <div
+            ref={relationshipDialogRef}
+            className={`relationship-dialog${
+              relationshipDialogCollapsed ? ' relationship-dialog-collapsed' : ''
+            }`}
+            role="dialog"
+            aria-label="Relationship finder"
+            style={relationshipDialogStyle}
+          >
+            <div
+              className="relationship-dialog__header overlay-drag-header"
+              onMouseDown={(event) => startOverlayDrag('relationship', event)}
+              onClick={() => {
+                if (suppressRelationshipToggleClickRef.current) return
+                setRelationshipDialogCollapsed((current) => !current)
+              }}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setRelationshipDialogCollapsed((current) => !current)
+                }
+              }}
+            >
               <span className="mini-label">Relationship</span>
+              <div className="floating-controls__header-actions">
+                <span className="floating-controls__value">
+                  {relationshipFrom && relationshipTo
+                    ? `${relationshipFrom.preferredName} -> ${relationshipTo.preferredName}`
+                    : 'Finder'}
+                </span>
+                <span className="floating-controls__chevron">
+                  {relationshipDialogCollapsed ? '+' : '-'}
+                </span>
+              </div>
             </div>
+            {!relationshipDialogCollapsed && (
+              <>
             <div className="relationship-dialog__controls">
               <label>
                 <span>Who is</span>
-                <select
-                  value={relationshipFromId}
-                  onChange={(event) => setRelationshipFromId(event.target.value)}
-                >
-                  <option value="">Select person</option>
-                  {sortedPeople.map((person) => (
-                    <option key={person.id} value={person.id}>
+                <input
+                  value={relationshipFromQuery}
+                  onChange={(event) => setRelationshipFromQuery(event.target.value)}
+                  placeholder="Type a name"
+                />
+                <div className="relationship-dialog__results">
+                  {filteredFromPeople.slice(0, 6).map((person) => (
+                    <button
+                      key={person.id}
+                      type="button"
+                      className="relationship-dialog__result"
+                      onClick={() => {
+                        setRelationshipFromId(person.id)
+                        setRelationshipFromQuery(person.preferredName)
+                      }}
+                    >
                       {person.preferredName}
-                    </option>
+                    </button>
                   ))}
-                </select>
+                </div>
               </label>
               <label>
                 <span>to</span>
-                <select
-                  value={relationshipToId}
-                  onChange={(event) => setRelationshipToId(event.target.value)}
-                >
-                  <option value="">Select person</option>
-                  {sortedPeople.map((person) => (
-                    <option key={person.id} value={person.id}>
+                <input
+                  value={relationshipToQuery}
+                  onChange={(event) => setRelationshipToQuery(event.target.value)}
+                  placeholder="Type a name"
+                />
+                <div className="relationship-dialog__results">
+                  {filteredToPeople.slice(0, 6).map((person) => (
+                    <button
+                      key={person.id}
+                      type="button"
+                      className="relationship-dialog__result"
+                      onClick={() => {
+                        setRelationshipToId(person.id)
+                        setRelationshipToQuery(person.preferredName)
+                      }}
+                    >
                       {person.preferredName}
-                    </option>
+                    </button>
                   ))}
-                </select>
+                </div>
               </label>
             </div>
             <div className="relationship-dialog__answer">
@@ -666,15 +979,35 @@ export function AppShell() {
                   {!relationshipResult.label && relationshipResult.path.length > 0 && (
                     <p>Path length: {relationshipResult.path.length - 1} hops</p>
                   )}
+                  <div className="relationship-dialog__actions">
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      onClick={() => setShowRelationshipGraph((current) => !current)}
+                    >
+                      {showRelationshipGraph ? 'Hide BFS subgraph' : 'Show BFS subgraph'}
+                    </button>
+                  </div>
                 </>
               ) : (
                 <strong>Select two people.</strong>
               )}
             </div>
+              </>
+            )}
           </div>
         </section>
 
         <div className="right-sidebar">
+          {!rightCollapsed && (
+            <div
+              className="sidebar-resize-handle"
+              onMouseDown={() => setIsResizingRightSidebar(true)}
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize right sidebar"
+            />
+          )}
           <button
             type="button"
             className="sidebar-toggle sidebar-toggle-right"
@@ -691,13 +1024,12 @@ export function AppShell() {
               selectedPersonId={selectedPersonId ?? ''}
               visibleIds={visibleIds}
               allPeople={people}
+              onCreateStandalonePerson={handleCreateStandalonePerson}
+              onQuickAddRelative={(type) => handleAddRelative(type)}
               onUpdateAttr={(key, value) =>
                 setGraph((current) =>
                   updatePersonAttr(current, selectedPersonId ?? '', key, value),
                 )
-              }
-              onRenameConnectedPerson={(personId, value) =>
-                setGraph((current) => updatePersonAttr(current, personId, 'preferredName', value))
               }
               onUpdateConnection={(edgeId, predicate) =>
                 setGraph((current) =>
@@ -727,6 +1059,21 @@ export function AppShell() {
                   ),
                 )
               }
+              onSoftDeletePerson={() => {
+                if (!selectedPersonId) return
+                if (!window.confirm('Soft delete this person and remove their personal information?')) {
+                  return
+                }
+                setGraph((current) => softDeletePerson(current, selectedPersonId))
+              }}
+              onHardDeletePerson={() => {
+                if (!selectedPersonId) return
+                if (!window.confirm('Hard delete this node by unlinking all related edges?')) {
+                  return
+                }
+                setGraph((current) => hardDeletePerson(current, selectedPersonId))
+                setSelectedEdgeId(null)
+              }}
             />
           )}
         </div>

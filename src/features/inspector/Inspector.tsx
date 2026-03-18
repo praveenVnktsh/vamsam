@@ -8,13 +8,16 @@ type InspectorProps = {
   selectedPersonId: string
   visibleIds: Set<string>
   allPeople: PersonView[]
-  onUpdateAttr: (key: string, value: string) => void
-  onRenameConnectedPerson: (personId: string, value: string) => void
+  onCreateStandalonePerson: (preferredName?: string) => void
+  onQuickAddRelative: (type: 'parent' | 'child' | 'partner' | 'sibling') => void
+  onUpdateAttr: (key: string, value: string | string[]) => void
   onUpdateConnection: (edgeId: string, predicate: string) => void
   onReverseConnection: (edgeId: string) => void
   onDeleteConnection: (edgeId: string) => void
   onAddConnectedPerson: (predicate: EdgePredicate, preferredName: string) => void
   onConnectExistingPerson: (targetId: string, predicate: EdgePredicate) => void
+  onSoftDeletePerson: () => void
+  onHardDeletePerson: () => void
 }
 
 export function Inspector({
@@ -23,22 +26,26 @@ export function Inspector({
   selectedPersonId,
   visibleIds,
   allPeople,
+  onCreateStandalonePerson,
+  onQuickAddRelative,
   onUpdateAttr,
-  onRenameConnectedPerson,
   onUpdateConnection,
   onReverseConnection,
   onDeleteConnection,
   onAddConnectedPerson,
   onConnectExistingPerson,
+  onSoftDeletePerson,
+  onHardDeletePerson,
 }: InspectorProps) {
-  const [newConnectionName, setNewConnectionName] = useState('')
-  const [newConnectionPredicate, setNewConnectionPredicate] = useState<EdgePredicate>(
-    EdgePredicate.PARENT_OF,
-  )
-  const [existingTargetId, setExistingTargetId] = useState('')
-  const [existingPredicate, setExistingPredicate] = useState<EdgePredicate>(
+  const [linkQuery, setLinkQuery] = useState('')
+  const [linkPredicate, setLinkPredicate] = useState<EdgePredicate>(
     EdgePredicate.PARTNER_OF,
   )
+  const [linkSelection, setLinkSelection] = useState<
+    { type: 'existing'; id: string } | { type: 'new'; name: string } | null
+  >(null)
+  const [linkError, setLinkError] = useState('')
+  const [newProfileLink, setNewProfileLink] = useState('')
   const datePattern = /^\d{4}(-\d{2}){0,2}$/
   const isDobValid =
     selectedPerson.dob.trim() === '' || datePattern.test(selectedPerson.dob.trim())
@@ -55,6 +62,67 @@ export function Inspector({
         .sort((a, b) => a.preferredName.localeCompare(b.preferredName)),
     [allPeople, selectedPersonId],
   )
+  const normalizedLinkQuery = linkQuery.trim().toLowerCase()
+  const linkMatches = useMemo(
+    () =>
+      connectablePeople.filter((person) =>
+        person.preferredName.toLowerCase().includes(normalizedLinkQuery),
+      ),
+    [connectablePeople, normalizedLinkQuery],
+  )
+  const exactMatch = useMemo(
+    () =>
+      connectablePeople.find(
+        (person) => person.preferredName.trim().toLowerCase() === normalizedLinkQuery,
+      ) ?? null,
+    [connectablePeople, normalizedLinkQuery],
+  )
+
+  function resetLinkComposer() {
+    setLinkQuery('')
+    setLinkSelection(null)
+    setLinkError('')
+  }
+
+  function handleApplyLink() {
+    const trimmed = linkQuery.trim()
+    if (!trimmed) {
+      setLinkError('Enter a person name.')
+      return
+    }
+
+    if (linkSelection?.type === 'existing') {
+      onConnectExistingPerson(linkSelection.id, linkPredicate)
+      resetLinkComposer()
+      return
+    }
+
+    if (linkSelection?.type === 'new') {
+      onAddConnectedPerson(linkPredicate, linkSelection.name)
+      resetLinkComposer()
+      return
+    }
+
+    if (exactMatch) {
+      onConnectExistingPerson(exactMatch.id, linkPredicate)
+      resetLinkComposer()
+      return
+    }
+
+    if (linkMatches.length > 0) {
+      setLinkError('Choose one of the matching people or select add new.')
+      return
+    }
+
+    setLinkError(`No existing person found. Select "Add ${trimmed}" to create one.`)
+  }
+
+  function handleAddProfileLink() {
+    const trimmed = newProfileLink.trim()
+    if (!trimmed) return
+    onUpdateAttr('links', [...selectedPerson.links, trimmed])
+    setNewProfileLink('')
+  }
 
   return (
     <aside className="inspector panel">
@@ -118,18 +186,15 @@ export function Inspector({
             {!isDodValid && <small className="field-hint error">Use YYYY, YYYY-MM, or YYYY-MM-DD</small>}
           </label>
           <label>
-            <span>Gender</span>
-            <input
-              value={selectedPerson.gender}
-              onChange={(event) => onUpdateAttr('gender', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Role label</span>
-            <input
-              value={selectedPerson.roleLabel}
-              onChange={(event) => onUpdateAttr('roleLabel', event.target.value)}
-            />
+            <span>Sex</span>
+            <select
+              value={selectedPerson.sex}
+              onChange={(event) => onUpdateAttr('sex', event.target.value)}
+            >
+              <option value="">Unspecified</option>
+              <option value="Male">Male</option>
+              <option value="Female">Female</option>
+            </select>
           </label>
           <label>
             <span>Birth place</span>
@@ -145,58 +210,56 @@ export function Inspector({
               onChange={(event) => onUpdateAttr('currentResidence', event.target.value)}
             />
           </label>
-          <label>
-            <span>Undergrad school</span>
-            <input
-              value={selectedPerson.undergradSchool}
-              onChange={(event) => onUpdateAttr('undergradSchool', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Undergrad degree</span>
-            <input
-              value={selectedPerson.undergradDegree}
-              onChange={(event) => onUpdateAttr('undergradDegree', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Grad school</span>
-            <input
-              value={selectedPerson.gradSchool}
-              onChange={(event) => onUpdateAttr('gradSchool', event.target.value)}
-            />
-          </label>
-          <label>
-            <span>Field of work</span>
-            <input
-              value={selectedPerson.fieldOfWork}
-              onChange={(event) => onUpdateAttr('fieldOfWork', event.target.value)}
-            />
-          </label>
           <label className="full-width">
-            <span>Health history</span>
-            <textarea
-              rows={3}
-              value={selectedPerson.healthHistory}
-              onChange={(event) => onUpdateAttr('healthHistory', event.target.value)}
-            />
-          </label>
-          <label className="full-width">
-            <span>Bio</span>
-            <textarea
-              rows={3}
-              value={selectedPerson.bio}
-              onChange={(event) => onUpdateAttr('bio', event.target.value)}
-            />
-          </label>
-          <label className="full-width">
-            <span>Notes</span>
+            <span>Private notes</span>
             <textarea
               rows={4}
-              value={selectedPerson.notes}
-              onChange={(event) => onUpdateAttr('notes', event.target.value)}
+              value={selectedPerson.privateNotes}
+              onChange={(event) => onUpdateAttr('privateNotes', event.target.value)}
             />
           </label>
+        </div>
+      </section>
+
+      <section className="inspector-section">
+        <h3>Links</h3>
+        <div className="links-editor">
+          {selectedPerson.links.map((link, index) => (
+            <div key={`${link}-${index}`} className="links-editor__row">
+              <input
+                value={link}
+                onChange={(event) => {
+                  const nextLinks = selectedPerson.links.map((entry, entryIndex) =>
+                    entryIndex === index ? event.target.value : entry,
+                  )
+                  onUpdateAttr('links', nextLinks)
+                }}
+                placeholder="https://linkedin.com/in/..."
+              />
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  onUpdateAttr(
+                    'links',
+                    selectedPerson.links.filter((_, entryIndex) => entryIndex !== index),
+                  )
+                }
+              >
+                Remove
+              </button>
+            </div>
+          ))}
+          <div className="links-editor__row">
+            <input
+              value={newProfileLink}
+              onChange={(event) => setNewProfileLink(event.target.value)}
+              placeholder="Add link"
+            />
+            <button type="button" onClick={handleAddProfileLink}>
+              Add
+            </button>
+          </div>
         </div>
       </section>
 
@@ -205,99 +268,110 @@ export function Inspector({
         <div className="connection-create">
           <div className="connection-create__row">
             <input
-              value={newConnectionName}
-              onChange={(event) => setNewConnectionName(event.target.value)}
-              placeholder="Add new person"
+              value={linkQuery}
+              onChange={(event) => {
+                const nextQuery = event.target.value
+                setLinkQuery(nextQuery)
+                setLinkError('')
+                const normalized = nextQuery.trim().toLowerCase()
+                const matchedPerson = connectablePeople.find(
+                  (person) => person.preferredName.trim().toLowerCase() === normalized,
+                )
+                setLinkSelection(
+                  matchedPerson ? { type: 'existing', id: matchedPerson.id } : null,
+                )
+              }}
+              placeholder="Find existing or add new person"
             />
             <select
-              value={newConnectionPredicate}
-              onChange={(event) =>
-                setNewConnectionPredicate(event.target.value as EdgePredicate)
-              }
+              value={linkPredicate}
+              onChange={(event) => setLinkPredicate(event.target.value as EdgePredicate)}
             >
-              <option value={EdgePredicate.PARENT_OF}>parent of</option>
               <option value={EdgePredicate.PARTNER_OF}>partner of</option>
-              <option value={EdgePredicate.SIBLING_OF}>sibling of</option>
-              <option value={EdgePredicate.GUARDIAN_OF}>guardian of</option>
-              <option value={EdgePredicate.STEP_PARENT_OF}>step parent of</option>
-              <option value={EdgePredicate.CLOSE_TO}>close to</option>
-              <option value={EdgePredicate.ESTRANGED_FROM}>estranged from</option>
+              <option value={EdgePredicate.PARENT_OF}>parent of</option>
             </select>
             <button
               type="button"
-              onClick={() => {
-                onAddConnectedPerson(newConnectionPredicate, newConnectionName)
-                setNewConnectionName('')
-              }}
+              onClick={handleApplyLink}
             >
-              Add
+              Apply
             </button>
           </div>
-          <div className="connection-create__row">
-            <select
-              value={existingTargetId}
-              onChange={(event) => setExistingTargetId(event.target.value)}
-            >
-              <option value="">Connect existing person</option>
-              {connectablePeople.map((person) => (
-                <option key={person.id} value={person.id}>
-                  {person.preferredName}
-                </option>
+          {linkQuery.trim() && (
+            <div className="connection-picker">
+              {linkMatches.slice(0, 6).map((person) => (
+                <button
+                  key={person.id}
+                  type="button"
+                  className={
+                    linkSelection?.type === 'existing' && linkSelection.id === person.id
+                      ? 'connection-picker__option active'
+                      : 'connection-picker__option'
+                  }
+                  onClick={() => {
+                    setLinkSelection({ type: 'existing', id: person.id })
+                    setLinkQuery(person.preferredName)
+                    setLinkError('')
+                  }}
+                >
+                  <span>{person.preferredName}</span>
+                  <small>Existing person</small>
+                </button>
               ))}
-            </select>
-            <select
-              value={existingPredicate}
-              onChange={(event) => setExistingPredicate(event.target.value as EdgePredicate)}
-            >
-              <option value={EdgePredicate.PARTNER_OF}>partner of</option>
-              <option value={EdgePredicate.SIBLING_OF}>sibling of</option>
-              <option value={EdgePredicate.PARENT_OF}>parent of</option>
-              <option value={EdgePredicate.GUARDIAN_OF}>guardian of</option>
-              <option value={EdgePredicate.STEP_PARENT_OF}>step parent of</option>
-              <option value={EdgePredicate.CLOSE_TO}>close to</option>
-              <option value={EdgePredicate.ESTRANGED_FROM}>estranged from</option>
-            </select>
-            <button
-              type="button"
-              onClick={() => {
-                if (!existingTargetId) return
-                onConnectExistingPerson(existingTargetId, existingPredicate)
-                setExistingTargetId('')
-              }}
-            >
-              Link
-            </button>
-          </div>
+              {!exactMatch && (
+                <button
+                  type="button"
+                  className={
+                    linkSelection?.type === 'new'
+                      ? 'connection-picker__option active'
+                      : 'connection-picker__option'
+                  }
+                  onClick={() => {
+                    setLinkSelection({ type: 'new', name: linkQuery.trim() })
+                    setLinkError('')
+                  }}
+                >
+                  <span>Add {linkQuery.trim()}</span>
+                  <small>Create new person</small>
+                </button>
+              )}
+            </div>
+          )}
+          {linkError && <p className="connection-create__error">{linkError}</p>}
+        </div>
+        <div className="quick-actions">
+          <button type="button" onClick={() => onQuickAddRelative('parent')}>
+            Add parent
+          </button>
+          <button type="button" onClick={() => onQuickAddRelative('child')}>
+            Add child
+          </button>
+          <button type="button" onClick={() => onQuickAddRelative('partner')}>
+            Add partner
+          </button>
+          <button type="button" onClick={() => onQuickAddRelative('sibling')}>
+            Add sibling
+          </button>
+          <button type="button" className="secondary-button" onClick={() => onCreateStandalonePerson('New Person')}>
+            Add standalone person
+          </button>
         </div>
         <ul className="connection-list">
           {connections.map(({ edge, person }) => (
             <li key={edge.id} className="connection-item">
-              <div className="connection-item__summary">
-                <input
-                  value={person.preferredName}
-                  onChange={(event) =>
-                    onRenameConnectedPerson(person.id, event.target.value)
-                  }
-                />
-                <small>
-                  {edge.src === selectedPersonId ? 'outgoing' : 'incoming'}
-                </small>
-              </div>
-              <div className="connection-item__controls">
+              <div className="connection-item__inline">
+                <div className="connection-item__name">{person.preferredName}</div>
                 <select
                   value={edge.predicate}
                   onChange={(event) => onUpdateConnection(edge.id, event.target.value)}
                 >
                   <option value={EdgePredicate.PARENT_OF}>parent of</option>
                   <option value={EdgePredicate.PARTNER_OF}>partner of</option>
-                  <option value={EdgePredicate.SIBLING_OF}>sibling of</option>
-                  <option value={EdgePredicate.GUARDIAN_OF}>guardian of</option>
-                  <option value={EdgePredicate.STEP_PARENT_OF}>step parent of</option>
-                  <option value={EdgePredicate.CLOSE_TO}>close to</option>
-                  <option value={EdgePredicate.ESTRANGED_FROM}>estranged from</option>
                 </select>
-                {edge.predicate !== EdgePredicate.PARTNER_OF &&
-                  edge.predicate !== EdgePredicate.SIBLING_OF && (
+                <small className="connection-item__direction">
+                  {edge.src === selectedPersonId ? 'outgoing' : 'incoming'}
+                </small>
+                {edge.predicate !== EdgePredicate.PARTNER_OF && (
                     <button
                       type="button"
                       className="secondary-button"
@@ -311,12 +385,27 @@ export function Inspector({
                   className="secondary-button"
                   onClick={() => onDeleteConnection(edge.id)}
                 >
-                  Delete
+                  Clear
                 </button>
               </div>
             </li>
           ))}
         </ul>
+      </section>
+
+      <section className="inspector-section delete-section">
+        <h3>Delete Node</h3>
+        <p className="delete-section__copy">
+          Soft delete anonymizes this person. Hard delete removes every link connected to this node.
+        </p>
+        <div className="delete-section__actions">
+          <button type="button" className="secondary-button" onClick={onSoftDeletePerson}>
+            Soft delete
+          </button>
+          <button type="button" className="danger-button" onClick={onHardDeletePerson}>
+            Hard delete
+          </button>
+        </div>
       </section>
     </aside>
   )

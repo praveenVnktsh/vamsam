@@ -14,28 +14,28 @@ import {
   type GraphSchema,
 } from './graph'
 
+function getAttrStringArray(entity: GraphEntity, key: string): string[] {
+  const value = entity.attrs[key]
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
 export type PersonView = {
   id: string
   label: string
   firstName: string
   lastName: string
   preferredName: string
-  gender: string
+  sex: string
   dob: string
   dod: string
   years: string
   branch: string
-  roleLabel: string
   photo: string
-  bio: string
-  notes: string
   birthPlace: string
   currentResidence: string
-  undergradSchool: string
-  undergradDegree: string
-  gradSchool: string
-  fieldOfWork: string
-  healthHistory: string
+  privateNotes: string
+  links: string[]
   x: number
   y: number
 }
@@ -82,19 +82,13 @@ export function graphPeople(graph: GraphSchema): PersonView[] {
     firstName: getAttrString(entity, 'firstName'),
     lastName: getAttrString(entity, 'lastName'),
     preferredName: getAttrString(entity, 'preferredName') || entity.label,
-    gender: getAttrString(entity, 'gender'),
+    sex: getAttrString(entity, 'sex') || getAttrString(entity, 'gender'),
     branch: getAttrString(entity, 'branch'),
-    roleLabel: getAttrString(entity, 'roleLabel'),
     photo: getAttrString(entity, 'photo'),
-    bio: getAttrString(entity, 'bio'),
-    notes: getAttrString(entity, 'notes'),
     birthPlace: getAttrString(entity, 'birthPlace'),
     currentResidence: getAttrString(entity, 'currentResidence'),
-    undergradSchool: getAttrString(entity, 'undergradSchool'),
-    undergradDegree: getAttrString(entity, 'undergradDegree'),
-    gradSchool: getAttrString(entity, 'gradSchool'),
-    fieldOfWork: getAttrString(entity, 'fieldOfWork'),
-    healthHistory: getAttrString(entity, 'healthHistory'),
+    privateNotes: getAttrString(entity, 'privateNotes') || getAttrString(entity, 'notes'),
+    links: getAttrStringArray(entity, 'links'),
     x: getAttrNumber(entity, 'x') ?? 50,
     y: getAttrNumber(entity, 'y') ?? 50,
   }))
@@ -108,10 +102,8 @@ export function shouldTraversePredicate(
   predicate: EdgePredicate,
   includePartners: boolean,
   includeNonBlood: boolean,
-  includeSiblings: boolean,
 ): boolean {
   if (predicate === EdgePredicate.PARTNER_OF && !includePartners) return false
-  if (predicate === EdgePredicate.SIBLING_OF && !includeSiblings) return false
   if (
     (predicate === EdgePredicate.GUARDIAN_OF ||
       predicate === EdgePredicate.STEP_PARENT_OF) &&
@@ -130,7 +122,6 @@ export function visiblePersonIds(
   showFullGraph: boolean,
   includePartners: boolean,
   includeNonBlood: boolean,
-  includeSiblings: boolean,
 ): Set<string> {
   const people = graphPeople(graph)
   const map = personMap(people)
@@ -151,7 +142,6 @@ export function visiblePersonIds(
         edge.predicate,
         includePartners,
         includeNonBlood,
-        includeSiblings,
       )
     ) {
       continue
@@ -184,7 +174,6 @@ export function visibleEdges(
   visibleIds: Set<string>,
   includePartners: boolean,
   includeNonBlood: boolean,
-  includeSiblings: boolean,
 ): Edge[] {
   return graph.edges.filter((edge) => {
     if (!visibleIds.has(edge.src) || !visibleIds.has(edge.dst)) return false
@@ -192,16 +181,33 @@ export function visibleEdges(
       edge.predicate,
       includePartners,
       includeNonBlood,
-      includeSiblings,
     )
   })
+}
+
+function isCoreRelationshipPredicate(predicate: EdgePredicate) {
+  return (
+    predicate === EdgePredicate.PARENT_OF ||
+    predicate === EdgePredicate.PARTNER_OF
+  )
+}
+
+export function sanitizeGraphForCoreRelationships(graph: GraphSchema): GraphSchema {
+  return {
+    ...graph,
+    metadata: {
+      ...graph.metadata,
+      source: 'blank-slate-v2',
+    },
+    edges: graph.edges.filter((edge) => isCoreRelationshipPredicate(edge.predicate)),
+  }
 }
 
 export function updatePersonAttr(
   graph: GraphSchema,
   personId: string,
   key: string,
-  value: string | number,
+  value: string | number | string[],
 ): GraphSchema {
   return {
     ...graph,
@@ -238,6 +244,44 @@ export function updatePersonPosition(
   let next = updatePersonAttr(graph, personId, 'x', x)
   next = updatePersonAttr(next, personId, 'y', y)
   return next
+}
+
+export function softDeletePerson(graph: GraphSchema, personId: string): GraphSchema {
+  return {
+    ...graph,
+    entities: graph.entities.map((entity) => {
+      if (entity.id !== personId || entity.entityType !== EntityType.PERSON) {
+        return entity
+      }
+
+      return {
+        ...entity,
+        label: 'Deleted person',
+        attrs: {
+          ...entity.attrs,
+          firstName: '',
+          lastName: '',
+          preferredName: 'Deleted person',
+          sex: '',
+          dob: '',
+          dod: '',
+          branch: '',
+          photo: 'DP',
+          birthPlace: '',
+          currentResidence: '',
+          privateNotes: '',
+          links: [],
+        },
+      }
+    }),
+  }
+}
+
+export function hardDeletePerson(graph: GraphSchema, personId: string): GraphSchema {
+  return {
+    ...graph,
+    edges: graph.edges.filter((edge) => edge.src !== personId && edge.dst !== personId),
+  }
 }
 
 export function updateEdge(
@@ -284,6 +328,7 @@ export function addConnection(
   dst: string,
   predicate: EdgePredicate,
 ): GraphSchema {
+  if (!isCoreRelationshipPredicate(predicate)) return graph
   if (src === dst) return graph
 
   const rule = PREDICATE_RULES[predicate]
@@ -318,6 +363,9 @@ export function addConnectedPerson(
   predicate: EdgePredicate,
   preferredName: string,
 ): { graph: GraphSchema; newPersonId: string } {
+  if (!isCoreRelationshipPredicate(predicate)) {
+    return { graph, newPersonId: selectedPerson.id }
+  }
   const entityId =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? `person:${crypto.randomUUID().slice(0, 8)}`
@@ -338,21 +386,20 @@ export function addConnectedPerson(
       firstName: cleanName,
       lastName: '',
       preferredName: cleanName,
-      gender: '',
+      sex: '',
       dob: '',
       dod: '',
       branch: selectedPerson.branch,
-      roleLabel: 'New connection',
       photo: cleanName
         .split(/\s+/)
         .map((part) => part[0] ?? '')
         .join('')
         .slice(0, 2)
         .toUpperCase(),
-      bio: '',
-      notes: '',
       birthPlace: '',
       currentResidence: '',
+      privateNotes: '',
+      links: [],
       x,
       y,
     },
@@ -372,11 +419,96 @@ export function addConnectedPerson(
   }
 }
 
+export function addStandalonePerson(
+  graph: GraphSchema,
+  preferredName: string,
+): { graph: GraphSchema; newPersonId: string } {
+  const entityId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? `person:${crypto.randomUUID().slice(0, 8)}`
+      : `person:${Date.now()}`
+  const cleanName = preferredName.trim() || 'New Person'
+  const personCount = graph.entities.filter(isPersonEntity).length
+  const column = personCount % 4
+  const row = Math.floor(personCount / 4)
+
+  const newPerson = createPersonEntity({
+    id: entityId,
+    label: cleanName,
+    attrs: {
+      firstName: cleanName,
+      lastName: '',
+      preferredName: cleanName,
+      sex: '',
+      dob: '',
+      dod: '',
+      branch: '',
+      photo: cleanName
+        .split(/\s+/)
+        .map((part) => part[0] ?? '')
+        .join('')
+        .slice(0, 2)
+        .toUpperCase(),
+      birthPlace: '',
+      currentResidence: '',
+      privateNotes: '',
+      links: [],
+      x: 24 + column * 18,
+      y: 24 + row * 18,
+    },
+  })
+
+  return {
+    graph: {
+      ...graph,
+      entities: [...graph.entities, newPerson],
+    },
+    newPersonId: entityId,
+  }
+}
+
 export function addRelative(
   graph: GraphSchema,
   selectedPerson: PersonView,
-  type: 'child' | 'partner',
+  type: 'parent' | 'child' | 'partner' | 'sibling',
 ): { graph: GraphSchema; newPersonId: string } {
+  if (type === 'parent') {
+    return addConnectedPerson(graph, selectedPerson, EdgePredicate.PARENT_OF, 'New Parent')
+  }
+
+  if (type === 'sibling') {
+    const parentIds = parentIdsOf(graph, selectedPerson.id)
+    const siblingResult = addStandalonePerson(graph, 'New Sibling')
+    const nextGraph =
+      parentIds.length > 0
+        ? parentIds.reduce(
+            (currentGraph, parentId) =>
+              addConnection(currentGraph, parentId, siblingResult.newPersonId, EdgePredicate.PARENT_OF),
+            siblingResult.graph,
+          )
+        : (() => {
+            const parentResult = addStandalonePerson(siblingResult.graph, 'New Parent')
+            let next = addConnection(
+              parentResult.graph,
+              parentResult.newPersonId,
+              selectedPerson.id,
+              EdgePredicate.PARENT_OF,
+            )
+            next = addConnection(
+              next,
+              parentResult.newPersonId,
+              siblingResult.newPersonId,
+              EdgePredicate.PARENT_OF,
+            )
+            return next
+          })()
+
+    return {
+      graph: nextGraph,
+      newPersonId: siblingResult.newPersonId,
+    }
+  }
+
   const entityId =
     typeof crypto !== 'undefined' && 'randomUUID' in crypto
       ? `person:${crypto.randomUUID().slice(0, 8)}`
@@ -395,13 +527,14 @@ export function addRelative(
       firstName: 'New',
       lastName: selectedPerson.lastName,
       preferredName: type === 'child' ? 'New Child' : 'New Partner',
+      sex: '',
       years: type === 'child' ? '2026-' : '',
       branch: type === 'child' ? 'Next generation' : selectedPerson.branch,
-      roleLabel: type === 'child' ? 'Child' : 'Partner',
       photo: type === 'child' ? 'NC' : 'NP',
-      bio: 'Replace this stub with real profile data.',
-      notes: 'Locally created graph entity.',
       birthPlace: '',
+      currentResidence: '',
+      privateNotes: '',
+      links: [],
       x,
       y,
     },
@@ -965,10 +1098,7 @@ export function shortestBloodPath(
   const adjacency = new Map<string, string[]>()
   for (const edge of graph.edges) {
     if (!people.has(edge.src) || !people.has(edge.dst)) continue
-    if (
-      edge.predicate !== EdgePredicate.PARENT_OF &&
-      edge.predicate !== EdgePredicate.SIBLING_OF
-    ) {
+    if (edge.predicate !== EdgePredicate.PARENT_OF) {
       continue
     }
 
@@ -1048,8 +1178,8 @@ function getDirectRelationship(graph: GraphSchema, fromId: string, toId: string)
   )
 }
 
-function inferGenderLabel(gender: string, maleLabel: string, femaleLabel: string, fallback: string) {
-  const normalized = gender.trim().toLowerCase()
+function inferSexLabel(sex: string, maleLabel: string, femaleLabel: string, fallback: string) {
+  const normalized = sex.trim().toLowerCase()
   if (normalized === 'male') return maleLabel
   if (normalized === 'female') return femaleLabel
   return fallback
@@ -1078,14 +1208,6 @@ function partnerIdsOf(graph: GraphSchema, personId: string): string[] {
 }
 
 function siblingIdsOf(graph: GraphSchema, personId: string): string[] {
-  const explicit = graph.edges
-    .filter(
-      (edge) =>
-        edge.predicate === EdgePredicate.SIBLING_OF &&
-        (edge.src === personId || edge.dst === personId),
-    )
-    .map((edge) => (edge.src === personId ? edge.dst : edge.src))
-
   const parents = new Set(parentIdsOf(graph, personId))
   const inferred = graph.edges
     .filter(
@@ -1093,7 +1215,7 @@ function siblingIdsOf(graph: GraphSchema, personId: string): string[] {
     )
     .map((edge) => edge.dst)
 
-  return Array.from(new Set([...explicit, ...inferred]))
+  return Array.from(new Set(inferred))
 }
 
 export function resolveRelationship(
@@ -1113,27 +1235,24 @@ export function resolveRelationship(
   if (direct?.predicate === EdgePredicate.PARTNER_OF) {
     return { label: 'spouse / partner', path }
   }
-  if (direct?.predicate === EdgePredicate.SIBLING_OF) {
-    return { label: 'sibling', path }
-  }
   if (direct?.predicate === EdgePredicate.PARENT_OF && direct.src === fromId) {
     return {
-      label: inferGenderLabel(from.gender, 'father', 'mother', 'parent'),
+      label: inferSexLabel(from.sex, 'father', 'mother', 'parent'),
       path,
     }
   }
   if (direct?.predicate === EdgePredicate.PARENT_OF && direct.dst === fromId) {
     return {
-      label: inferGenderLabel(from.gender, 'son', 'daughter', 'child'),
+      label: inferSexLabel(from.sex, 'son', 'daughter', 'child'),
       path,
     }
   }
 
   if (isParentOf(graph, fromId, toId)) {
-    return { label: inferGenderLabel(from.gender, 'father', 'mother', 'parent'), path }
+    return { label: inferSexLabel(from.sex, 'father', 'mother', 'parent'), path }
   }
   if (isParentOf(graph, toId, fromId)) {
-    return { label: inferGenderLabel(from.gender, 'son', 'daughter', 'child'), path }
+    return { label: inferSexLabel(from.sex, 'son', 'daughter', 'child'), path }
   }
 
   const toParents = parentIdsOf(graph, toId)
@@ -1150,11 +1269,11 @@ export function resolveRelationship(
   if (toParents.some((parentId) => fromSiblings.has(parentId))) {
     const parent = toParents.find((parentId) => fromSiblings.has(parentId))
     const parentPerson = parent ? people.get(parent) : undefined
-    const isMaternal = parentPerson?.gender.trim().toLowerCase() === 'female'
+    const isMaternal = parentPerson?.sex.trim().toLowerCase() === 'female'
     return {
-      label: inferGenderLabel(from.gender, 'uncle', 'aunt', 'aunt / uncle'),
-      tamilLabel: inferGenderLabel(
-        from.gender,
+      label: inferSexLabel(from.sex, 'uncle', 'aunt', 'aunt / uncle'),
+      tamilLabel: inferSexLabel(
+        from.sex,
         isMaternal ? 'mama' : 'mama',
         isMaternal ? 'chitti' : 'athai',
         'relative',
@@ -1167,11 +1286,11 @@ export function resolveRelationship(
     const parentSiblings = siblingIdsOf(graph, parentId)
     if (parentSiblings.some((siblingId) => partnerIdsOf(graph, siblingId).includes(fromId))) {
       const parent = people.get(parentId)
-      const isMaternal = parent?.gender.trim().toLowerCase() === 'female'
+      const isMaternal = parent?.sex.trim().toLowerCase() === 'female'
       return {
-        label: inferGenderLabel(from.gender, 'uncle by marriage', 'aunt by marriage', 'in-law'),
-        tamilLabel: inferGenderLabel(
-          from.gender,
+        label: inferSexLabel(from.sex, 'uncle by marriage', 'aunt by marriage', 'in-law'),
+        tamilLabel: inferSexLabel(
+          from.sex,
           isMaternal ? 'athimber' : 'athimber',
           isMaternal ? 'mami' : 'mami',
           'in-law',

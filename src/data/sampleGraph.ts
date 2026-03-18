@@ -1,24 +1,12 @@
-import baseGraph from './defaults/default-family-graph.json'
-import esBranch from './defaults/es-branch.json'
-import iyengarSiblings from './defaults/iyengar-siblings.json'
 import type { GraphSchema } from '../domain/graph'
 
-const mergedGraph = {
-  ...(baseGraph as GraphSchema),
+export const sampleGraph: GraphSchema = {
+  version: '1.0.0',
+  rootOwnerId: 'user:self',
+  entities: [],
+  edges: [],
   metadata: {
-    ...(baseGraph as GraphSchema).metadata,
-    source: 'user spreadsheet',
+    treeName: 'வம்சம்',
+    source: 'blank-slate-v2',
   },
-  entities: [
-    ...(baseGraph as GraphSchema).entities,
-    ...((esBranch as { entities: GraphSchema['entities'] }).entities ?? []),
-    ...((iyengarSiblings as { entities: GraphSchema['entities'] }).entities ?? []),
-  ],
-  edges: [
-    ...(baseGraph as GraphSchema).edges,
-    ...((esBranch as { edges: GraphSchema['edges'] }).edges ?? []),
-    ...((iyengarSiblings as { edges: GraphSchema['edges'] }).edges ?? []),
-  ],
-} satisfies GraphSchema
-
-export const sampleGraph = mergedGraph
+}
