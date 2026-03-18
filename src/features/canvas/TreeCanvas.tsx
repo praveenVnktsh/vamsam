@@ -32,6 +32,7 @@ type TreeCanvasProps = {
   visibleIds: Set<string>
   deemphasizedIds: Set<string>
   visibleEdges: GraphSchema['edges']
+  highlightedEdgeIds: Set<string>
   selectedPersonId: string
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
@@ -149,7 +150,7 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
             </div>
             <button
               type="button"
-              className="flow-family-person"
+              className={`flow-family-person ${sexToneClass(person.sex)}`}
               onClick={(event) => {
                 event.stopPropagation()
                 onSelectPerson(person.id)
@@ -220,6 +221,35 @@ function deemphasizedEdgeStyle(predicate: EdgePredicate) {
   }
 }
 
+function highlightedEdgeStyle(predicate: EdgePredicate) {
+  const base = edgeStyle(predicate)
+  return {
+    ...base,
+    stroke: predicate === EdgePredicate.PARTNER_OF ? '#d06a2a' : '#1a73e8',
+    strokeWidth: 3.6,
+  }
+}
+
+function edgeMarker(predicate: EdgePredicate) {
+  const style = edgeStyle(predicate)
+  return {
+    type: MarkerType.ArrowClosed,
+    width: 14,
+    height: 14,
+    color: style.stroke,
+  }
+}
+
+function highlightedEdgeMarker(predicate: EdgePredicate) {
+  const style = highlightedEdgeStyle(predicate)
+  return {
+    type: MarkerType.ArrowClosed,
+    width: 14,
+    height: 14,
+    color: style.stroke,
+  }
+}
+
 function recomputeUnionNodes(
   nodes: FlowCanvasNode[],
   visibleEdges: GraphSchema['edges'],
@@ -252,6 +282,7 @@ export function TreeCanvas({
   visibleIds,
   deemphasizedIds,
   visibleEdges,
+  highlightedEdgeIds,
   selectedPersonId,
   selectedEdgeId,
   layoutMode,
@@ -431,7 +462,10 @@ export function TreeCanvas({
   const flowEdges = useMemo<FlowEdge[]>(() => {
     if (layoutMode === 'family') {
       const directEdges: FlowEdge[] = []
-      const mergedFamilyChildEdges = new Map<string, FlowEdge>()
+      const mergedFamilyChildEdges = new Map<
+        string,
+        FlowEdge & { data?: { rawEdgeIds: string[] } }
+      >()
 
       for (const edge of visibleEdges) {
         if (edge.predicate === EdgePredicate.PARTNER_OF) continue
@@ -457,9 +491,13 @@ export function TreeCanvas({
               targetHandle: 'top',
               type: 'simplebezier',
               label: selectedEdgeId === mergedId ? edge.predicate.replaceAll('_', ' ') : '',
-              markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
+              markerEnd: highlightedEdgeIds.has(edge.id)
+                ? highlightedEdgeMarker(edge.predicate)
+                : edgeMarker(edge.predicate),
               animated: false,
-              style: familyConnectionStyle(edge.predicate),
+              style: highlightedEdgeIds.has(edge.id)
+                ? highlightedEdgeStyle(edge.predicate)
+                : familyConnectionStyle(edge.predicate),
               labelStyle: {
                 fontSize: 12,
                 fill: '#18333d',
@@ -472,7 +510,24 @@ export function TreeCanvas({
               labelBgPadding: [6, 4],
               labelBgBorderRadius: 6,
               selected: selectedEdgeId === mergedId,
+              data: { rawEdgeIds: [edge.id] },
             })
+          } else {
+            const existing = mergedFamilyChildEdges.get(mergedId)
+            if (existing) {
+              existing.data = {
+                rawEdgeIds: Array.from(new Set([...(existing.data?.rawEdgeIds ?? []), edge.id])),
+              }
+              const isHighlighted = existing.data.rawEdgeIds.some((rawId: string) =>
+                highlightedEdgeIds.has(rawId),
+              )
+              existing.markerEnd = isHighlighted
+                ? highlightedEdgeMarker(edge.predicate)
+                : edgeMarker(edge.predicate)
+              existing.style = isHighlighted
+                ? highlightedEdgeStyle(edge.predicate)
+                : familyConnectionStyle(edge.predicate)
+            }
           }
           continue
         }
@@ -489,15 +544,18 @@ export function TreeCanvas({
             `${edge.id}:${sourceNodeId}:${targetNodeId}` === selectedEdgeId
               ? edge.predicate.replaceAll('_', ' ')
               : '',
-          markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
+          markerEnd: highlightedEdgeIds.has(edge.id)
+            ? highlightedEdgeMarker(edge.predicate)
+            : edgeMarker(edge.predicate),
           animated: false,
-          style:
-            sourceNodeId.startsWith('family:') && targetNodeId.startsWith('family:')
+          style: highlightedEdgeIds.has(edge.id)
+            ? highlightedEdgeStyle(edge.predicate)
+            : sourceNodeId.startsWith('family:') && targetNodeId.startsWith('family:')
               ? familyConnectionStyle(edge.predicate)
               : deemphasizedIds.has(edge.src) ||
                   deemphasizedIds.has(edge.dst)
                 ? deemphasizedEdgeStyle(edge.predicate)
-              : edgeStyle(edge.predicate),
+                : edgeStyle(edge.predicate),
           labelStyle: {
             fontSize: 12,
             fill: '#18333d',
@@ -526,7 +584,10 @@ export function TreeCanvas({
         peopleById.has(edge.dst),
     )
 
-    const childToUnion = new Map<string, { unionId: string; predicate: EdgePredicate }>()
+    const childToUnion = new Map<
+      string,
+      { unionId: string; predicate: EdgePredicate; edgeIds: string[] }
+    >()
     const unionConnectorEdges: FlowEdge[] = []
 
     for (const edge of partnerEdges) {
@@ -564,7 +625,9 @@ export function TreeCanvas({
         sourceHandle: 'right',
         targetHandle: 'left',
         type: 'simplebezier',
-        style: edgeStyle(EdgePredicate.PARTNER_OF),
+        style: highlightedEdgeIds.has(edge.id)
+          ? highlightedEdgeStyle(EdgePredicate.PARTNER_OF)
+          : edgeStyle(EdgePredicate.PARTNER_OF),
         selected: edge.id === selectedEdgeId,
       })
 
@@ -574,7 +637,16 @@ export function TreeCanvas({
 
       for (const childEdge of sharedChildEdges) {
         if (!childToUnion.has(childEdge.dst)) {
-          childToUnion.set(childEdge.dst, { unionId, predicate: childEdge.predicate })
+          childToUnion.set(childEdge.dst, {
+            unionId,
+            predicate: childEdge.predicate,
+            edgeIds: [childEdge.id],
+          })
+        } else {
+          const existing = childToUnion.get(childEdge.dst)
+          if (existing) {
+            existing.edgeIds = Array.from(new Set([...existing.edgeIds, childEdge.id]))
+          }
         }
       }
     }
@@ -595,9 +667,13 @@ export function TreeCanvas({
           targetHandle: 'top',
           type: 'simplebezier',
           label: edge.id === selectedEdgeId ? edge.predicate.replaceAll('_', ' ') : '',
-          markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
+          markerEnd: highlightedEdgeIds.has(edge.id)
+            ? highlightedEdgeMarker(edge.predicate)
+            : edgeMarker(edge.predicate),
           animated: false,
-          style: edgeStyle(edge.predicate),
+          style: highlightedEdgeIds.has(edge.id)
+            ? highlightedEdgeStyle(edge.predicate)
+            : edgeStyle(edge.predicate),
           labelStyle: {
             fontSize: 12,
             fill: '#18333d',
@@ -626,9 +702,13 @@ export function TreeCanvas({
           selectedEdgeId === `merged:${union.unionId}:${childId}`
             ? union.predicate.replaceAll('_', ' ')
             : '',
-        markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
+        markerEnd: union.edgeIds.some((edgeId) => highlightedEdgeIds.has(edgeId))
+          ? highlightedEdgeMarker(union.predicate)
+          : edgeMarker(union.predicate),
         animated: false,
-        style: edgeStyle(union.predicate),
+        style: union.edgeIds.some((edgeId) => highlightedEdgeIds.has(edgeId))
+          ? highlightedEdgeStyle(union.predicate)
+          : edgeStyle(union.predicate),
         labelStyle: {
           fontSize: 12,
           fill: '#18333d',
@@ -645,11 +725,12 @@ export function TreeCanvas({
     )
 
     return [...unionConnectorEdges, ...directEdges, ...mergedChildEdges]
-  }, [deemphasizedIds, familyByMemberId, layoutMode, people, selectedEdgeId, visibleEdges])
+  }, [deemphasizedIds, familyByMemberId, highlightedEdgeIds, layoutMode, people, selectedEdgeId, visibleEdges])
 
   const [nodes, setNodes] = useNodesState(flowNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null)
+  const handledFlyNonceRef = useRef<number | null>(null)
 
   useEffect(() => {
     setNodes(flowNodes)
@@ -676,6 +757,7 @@ export function TreeCanvas({
 
   useEffect(() => {
     if (!flyToPersonRequest?.personId) return
+    if (handledFlyNonceRef.current === flyToPersonRequest.nonce) return
     const instance = flowInstanceRef.current
     if (!instance || nodes.length === 0) return
 
@@ -688,13 +770,12 @@ export function TreeCanvas({
       })
 
     if (!targetNode) return
+    handledFlyNonceRef.current = flyToPersonRequest.nonce
 
     requestAnimationFrame(() => {
-      void instance.fitView({
+      void instance.setCenter(targetNode.position.x, targetNode.position.y, {
         duration: 280,
-        padding: 0.45,
-        nodes: [{ id: targetNode.id }],
-        maxZoom: 1.2,
+        zoom: instance.getZoom(),
       })
     })
   }, [flyToPersonRequest, nodes])

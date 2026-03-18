@@ -15,7 +15,10 @@ type InspectorProps = {
   selectedPersonId: string
   visibleIds: Set<string>
   allPeople: PersonView[]
+  collapsed: boolean
   onFlyToNode: () => void
+  onClose: () => void
+  onToggleCollapse: () => void
   onCreateStandalonePerson: (preferredName?: string) => void
   onQuickAddRelative: (type: 'parent' | 'child' | 'partner' | 'sibling') => void
   onUpdateAttr: (key: string, value: string | string[]) => void
@@ -34,7 +37,10 @@ export function Inspector({
   selectedPersonId,
   visibleIds,
   allPeople,
+  collapsed,
   onFlyToNode,
+  onClose,
+  onToggleCollapse,
   onCreateStandalonePerson,
   onQuickAddRelative,
   onUpdateAttr,
@@ -146,18 +152,35 @@ export function Inspector({
   }
 
   return (
-    <aside className="inspector panel">
+    <aside className={`inspector panel${collapsed ? ' inspector-collapsed' : ''}`}>
       <div className="inspector-topbar">
         <div>
           <p className="mini-label">Inspector</p>
           <h2>{displayName(selectedPerson)}</h2>
         </div>
-        <button type="button" className="secondary-button inspector-topbar__action" onClick={onFlyToNode}>
-          Fly to node
-        </button>
+        <div className="inspector-topbar__actions">
+          <button type="button" className="secondary-button inspector-topbar__action" onClick={(event) => {
+            event.stopPropagation()
+            onToggleCollapse()
+          }}>
+            {collapsed ? '+' : '-'}
+          </button>
+          <button type="button" className="secondary-button inspector-topbar__action" onClick={(event) => {
+            event.stopPropagation()
+            onFlyToNode()
+          }}>
+            Fly to node
+          </button>
+          <button type="button" className="secondary-button inspector-topbar__action" onClick={(event) => {
+            event.stopPropagation()
+            onClose()
+          }}>
+            ×
+          </button>
+        </div>
       </div>
 
-      <div className="inspector-body">
+      {!collapsed && <div className="inspector-body">
         <div className="profile-card">
           <div className="profile-photo">{selectedPerson.photo}</div>
           <div>
@@ -393,7 +416,7 @@ export function Inspector({
             </button>
           </div>
         </section>
-      </div>
+      </div>}
     </aside>
   )
 }

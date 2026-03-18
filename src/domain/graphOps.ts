@@ -165,6 +165,14 @@ function placeholderRelativeName(
   return `${possessiveName(displayName(person))} ${relation}`
 }
 
+function seededRelativeName(
+  person: Pick<PersonView, 'nickname' | 'firstName' | 'label'>,
+  relation: string,
+): string {
+  const baseName = displayName(person).trim() || 'Person'
+  return `${baseName} ${relation}`
+}
+
 export function fullName(
   person: Pick<PersonView, 'firstName' | 'lastName' | 'label'>,
 ): string {
@@ -586,7 +594,10 @@ export function addSiblingPerson(
   selectedPerson: PersonView,
   preferredName: string,
 ): { graph: GraphSchema; newPersonId: string } {
-  const siblingResult = addStandalonePerson(graph, preferredName.trim() || 'New Sibling')
+  const siblingResult = addStandalonePerson(
+    graph,
+    preferredName.trim() || seededRelativeName(selectedPerson, 'sibling'),
+  )
   const nextGraph = connectPeopleAsSiblings(
     siblingResult.graph,
     selectedPerson.id,
@@ -606,7 +617,7 @@ export function addParentPerson(
 ): { graph: GraphSchema; newPersonId: string } {
   const parentResult = addStandalonePerson(
     graph,
-    preferredName.trim() || placeholderRelativeName(selectedPerson, 'parent'),
+    preferredName.trim() || seededRelativeName(selectedPerson, 'parent'),
   )
   const parentGraph = updatePersonPosition(
     parentResult.graph,
@@ -683,7 +694,7 @@ export function addRelative(
     const parentResult = addParentPerson(
       graph,
       selectedPerson,
-      placeholderRelativeName(selectedPerson, 'parent'),
+      seededRelativeName(selectedPerson, 'parent'),
     )
 
     const siblingUnitIds = [selectedPerson.id, ...siblingIdsOf(graph, selectedPerson.id)]
@@ -705,7 +716,7 @@ export function addRelative(
   }
 
   if (type === 'sibling') {
-    return addSiblingPerson(graph, selectedPerson, 'New Sibling')
+    return addSiblingPerson(graph, selectedPerson, seededRelativeName(selectedPerson, 'sibling'))
   }
 
   const entityId =
@@ -719,11 +730,16 @@ export function addRelative(
       : Math.min(selectedPerson.x + 16, 92)
   const y = type === 'child' ? Math.min(selectedPerson.y + 18, 92) : selectedPerson.y
 
+  const seededName =
+    type === 'child'
+      ? seededRelativeName(selectedPerson, 'child')
+      : seededRelativeName(selectedPerson, 'partner')
+
   const newPerson = createPersonEntity({
     id: entityId,
-    label: type === 'child' ? 'New Child' : 'New Partner',
+    label: seededName,
     attrs: {
-      firstName: 'New',
+      firstName: seededName,
       nickname: '',
       lastName: selectedPerson.lastName,
       sex: '',
@@ -1087,6 +1103,7 @@ function heuristicAutoLayoutGraph(
 type AutoLayoutOptions = {
   compact?: boolean
   layoutMode?: 'person' | 'family'
+  layoutAlgorithm?: 'hierarchy' | 'organic'
 }
 
 type LayoutNodeSpec = {
@@ -1095,9 +1112,175 @@ type LayoutNodeSpec = {
   height: number
 }
 
+type LayoutEdgeSpec = {
+  id: string
+  sources: string[]
+  targets: string[]
+  predicate: EdgePredicate
+}
+
 type FamilyUnitSpec = {
   id: string
   memberIds: string[]
+}
+
+function organicLayoutPositions(
+  graph: GraphSchema,
+  layoutNodes: Map<string, LayoutNodeSpec>,
+  layoutEdges: LayoutEdgeSpec[],
+  familyUnits: FamilyUnitSpec[],
+  compact: boolean,
+) {
+  const peopleById = personMap(graphPeople(graph))
+  const positions = new Map<string, { x: number; y: number }>()
+  const nodeIds = Array.from(layoutNodes.keys())
+
+  for (const nodeId of nodeIds) {
+    if (nodeId.startsWith('family:')) {
+      const unit = familyUnits.find((family) => family.id === nodeId)
+      const members = unit?.memberIds
+        .map((memberId) => peopleById.get(memberId))
+        .filter((person): person is PersonView => Boolean(person)) ?? []
+      const avgX =
+        members.length > 0
+          ? members.reduce((sum, person) => sum + person.x, 0) / members.length
+          : 24
+      const avgY =
+        members.length > 0
+          ? members.reduce((sum, person) => sum + person.y, 0) / members.length
+          : 24
+      positions.set(nodeId, { x: avgX, y: avgY })
+      continue
+    }
+
+    const person = peopleById.get(nodeId)
+    positions.set(nodeId, {
+      x: person?.x ?? 24,
+      y: person?.y ?? 24,
+    })
+  }
+
+  const repelStrength = compact ? 220 : 320
+  const springStrength = compact ? 0.026 : 0.022
+  const gravityStrength = compact ? 0.004 : 0.003
+  const iterations = compact ? 140 : 180
+
+  for (let iteration = 0; iteration < iterations; iteration += 1) {
+    const forces = new Map<string, { x: number; y: number }>(
+      nodeIds.map((nodeId) => [nodeId, { x: 0, y: 0 }]),
+    )
+
+    for (let index = 0; index < nodeIds.length; index += 1) {
+      const sourceId = nodeIds[index]
+      const sourcePosition = positions.get(sourceId)
+      if (!sourcePosition) continue
+
+      for (let innerIndex = index + 1; innerIndex < nodeIds.length; innerIndex += 1) {
+        const targetId = nodeIds[innerIndex]
+        const targetPosition = positions.get(targetId)
+        if (!targetPosition) continue
+
+        let dx = targetPosition.x - sourcePosition.x
+        let dy = targetPosition.y - sourcePosition.y
+        let distanceSquared = dx * dx + dy * dy
+
+        if (distanceSquared < 0.01) {
+          dx = 0.1
+          dy = 0.1
+          distanceSquared = 0.02
+        }
+
+        const distance = Math.sqrt(distanceSquared)
+        const force = repelStrength / distanceSquared
+        const fx = (dx / distance) * force
+        const fy = (dy / distance) * force
+
+        const sourceForce = forces.get(sourceId)
+        const targetForce = forces.get(targetId)
+        if (!sourceForce || !targetForce) continue
+
+        sourceForce.x -= fx
+        sourceForce.y -= fy
+        targetForce.x += fx
+        targetForce.y += fy
+      }
+    }
+
+    for (const edge of layoutEdges) {
+      const sourceId = edge.sources[0]
+      const targetId = edge.targets[0]
+      const sourcePosition = positions.get(sourceId)
+      const targetPosition = positions.get(targetId)
+      if (!sourcePosition || !targetPosition) continue
+
+      let dx = targetPosition.x - sourcePosition.x
+      let dy = targetPosition.y - sourcePosition.y
+      let distance = Math.sqrt(dx * dx + dy * dy)
+      if (distance < 0.01) {
+        dx = 0.1
+        dy = 0.1
+        distance = Math.sqrt(dx * dx + dy * dy)
+      }
+
+      const desiredDistance =
+        edge.predicate === EdgePredicate.PARTNER_OF
+          ? compact
+            ? 18
+            : 22
+          : compact
+            ? 24
+            : 30
+      const delta = distance - desiredDistance
+      const force = delta * springStrength
+      const fx = (dx / distance) * force
+      const fy = (dy / distance) * force
+
+      const sourceForce = forces.get(sourceId)
+      const targetForce = forces.get(targetId)
+      if (!sourceForce || !targetForce) continue
+
+      sourceForce.x += fx
+      sourceForce.y += fy
+      targetForce.x -= fx
+      targetForce.y -= fy
+    }
+
+    const centroidX =
+      nodeIds.reduce((sum, nodeId) => sum + (positions.get(nodeId)?.x ?? 0), 0) / nodeIds.length
+    const centroidY =
+      nodeIds.reduce((sum, nodeId) => sum + (positions.get(nodeId)?.y ?? 0), 0) / nodeIds.length
+
+    for (const nodeId of nodeIds) {
+      const position = positions.get(nodeId)
+      const force = forces.get(nodeId)
+      if (!position || !force) continue
+
+      force.x += (centroidX - position.x) * gravityStrength
+      force.y += (centroidY - position.y) * gravityStrength
+
+      const maxStep = compact ? 1.8 : 2.2
+      position.x += Math.max(-maxStep, Math.min(maxStep, force.x))
+      position.y += Math.max(-maxStep, Math.min(maxStep, force.y))
+    }
+  }
+
+  let minX = Number.POSITIVE_INFINITY
+  let minY = Number.POSITIVE_INFINITY
+  for (const position of positions.values()) {
+    minX = Math.min(minX, position.x)
+    minY = Math.min(minY, position.y)
+  }
+
+  const offsetX = 16 - minX
+  const offsetY = 16 - minY
+  for (const [nodeId, position] of positions.entries()) {
+    positions.set(nodeId, {
+      x: snapLayoutValue(position.x + offsetX, LAYOUT_GRID_X),
+      y: snapLayoutValue(position.y + offsetY, LAYOUT_GRID_Y),
+    })
+  }
+
+  return positions
 }
 
 type ElkNodeLike = {
@@ -1242,6 +1425,7 @@ export async function autoLayoutGraph(
 ): Promise<GraphSchema> {
   const compact = options?.compact ?? false
   const layoutMode = options?.layoutMode ?? 'person'
+  const layoutAlgorithm = options?.layoutAlgorithm ?? 'hierarchy'
   const people = graphPeople(graph).filter((person) => !scopedIds || scopedIds.has(person.id))
 
   if (people.length === 0) {
@@ -1299,7 +1483,7 @@ export async function autoLayoutGraph(
       })
     }
 
-    const layoutEdges = new Map<string, { id: string; sources: string[]; targets: string[] }>()
+    const layoutEdges = new Map<string, LayoutEdgeSpec>()
     for (const edge of visibleEdges) {
       const sourceId = nodeIdByPerson.get(edge.src) ?? edge.src
       const targetId = nodeIdByPerson.get(edge.dst) ?? edge.dst
@@ -1315,7 +1499,55 @@ export async function autoLayoutGraph(
           id: dedupeId,
           sources: [sourceId],
           targets: [targetId],
+          predicate: edge.predicate,
         })
+      }
+    }
+
+    if (layoutAlgorithm === 'organic') {
+      const nodePositions = organicLayoutPositions(
+        graph,
+        layoutNodes,
+        Array.from(layoutEdges.values()),
+        familyUnits,
+        compact,
+      )
+
+      return {
+        ...graph,
+        entities: graph.entities.map((entity) => {
+          if (!isPersonEntity(entity)) return entity
+          const nodeId = nodeIdByPerson.get(entity.id) ?? entity.id
+          const position = nodePositions.get(nodeId)
+          if (!position) return entity
+
+          if (!nodeId.startsWith('family:')) {
+            return {
+              ...entity,
+              attrs: {
+                ...entity.attrs,
+                x: position.x,
+                y: position.y,
+              },
+            }
+          }
+
+          const unit = familyUnits.find((family) => family.id === nodeId)
+          const memberIndex = unit?.memberIds.indexOf(entity.id) ?? -1
+          const offset = compact ? 8 : 10
+
+          return {
+            ...entity,
+            attrs: {
+              ...entity.attrs,
+              x: snapLayoutValue(
+                position.x + (memberIndex === 0 ? -offset / 2 : offset / 2),
+                LAYOUT_GRID_X,
+              ),
+              y: position.y,
+            },
+          }
+        }),
       }
     }
 
@@ -1670,6 +1902,49 @@ function ancestorDepths(graph: GraphSchema, personId: string): Map<string, numbe
   return depths
 }
 
+export function estimateSharedDnaPercent(
+  graph: GraphSchema,
+  fromId: string,
+  toId: string,
+): number | null {
+  if (fromId === toId) return 100
+
+  const people = new Set(graph.entities.filter(isPersonEntity).map((entity) => entity.id))
+  if (!people.has(fromId) || !people.has(toId)) return null
+
+  const fromAncestors = ancestorDepths(graph, fromId)
+  const toAncestors = ancestorDepths(graph, toId)
+  let bestScore = Number.POSITIVE_INFINITY
+  const nearestCommonAncestors: Array<{ fromDepth: number; toDepth: number }> = []
+
+  for (const [ancestorId, fromDepth] of fromAncestors.entries()) {
+    const toDepth = toAncestors.get(ancestorId)
+    if (toDepth === undefined) continue
+
+    const score = fromDepth + toDepth
+    if (score < bestScore) {
+      bestScore = score
+      nearestCommonAncestors.length = 0
+      nearestCommonAncestors.push({ fromDepth, toDepth })
+      continue
+    }
+
+    if (score === bestScore) {
+      nearestCommonAncestors.push({ fromDepth, toDepth })
+    }
+  }
+
+  if (nearestCommonAncestors.length === 0) return null
+
+  const coefficient = nearestCommonAncestors.reduce((sum, relation) => {
+    return sum + Math.pow(0.5, relation.fromDepth + relation.toDepth)
+  }, 0)
+
+  if (coefficient <= 0) return null
+
+  return coefficient * 100
+}
+
 function ancestorPredecessors(graph: GraphSchema, personId: string): Map<string, string | null> {
   const previous = new Map<string, string | null>([[personId, null]])
   const queue = [personId]
@@ -1765,6 +2040,14 @@ function socialAddressForResolvedRelationship(
   to: PersonView,
   relationship: ResolvedRelationship,
 ): string | undefined {
+  const normalizedLabel = (
+    relationship.labels?.en ??
+    relationship.label ??
+    ''
+  )
+    .trim()
+    .toLowerCase()
+
   if (relationship.key) {
     switch (relationship.key) {
       case 'father':
@@ -1806,6 +2089,10 @@ function socialAddressForResolvedRelationship(
     }
   }
 
+  if (normalizedLabel.includes('cousin') && !normalizedLabel.includes('removed')) {
+    return undefined
+  }
+
   const bloodPath = shortestBloodPath(graph, from.id, to.id)
   if (bloodPath.length === 0) return undefined
 
@@ -1834,7 +2121,11 @@ function socialAddressForResolvedRelationship(
 
   if (!best) return undefined
 
-  if (best.fromDepth >= 1 && best.toDepth >= 2) {
+  if (
+    normalizedLabel.includes('cousin') &&
+    normalizedLabel.includes('removed') &&
+    best.fromDepth < best.toDepth
+  ) {
     return from.sex.trim().toLowerCase() === 'female' ? 'aunty' : 'uncle'
   }
 
