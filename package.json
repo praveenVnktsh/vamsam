@@ -2,6 +2,7 @@
   "name": "family-tree",
   "private": true,
   "version": "0.0.0",
+  "description": "Vaṃsam is a local-first family graph editor for building and exploring a family tree one person at a time.",
   "type": "module",
   "scripts": {
     "dev": "vite",

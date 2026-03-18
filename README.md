@@ -1,73 +1,95 @@
-# React + TypeScript + Vite
+# வம்சம் · Vaṃsam
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Vaṃsam is a local-first family graph editor for building and exploring a family tree one person at a time.
 
-Currently, two official plugins are available:
+It is designed for manual curation rather than bulk import:
+- start from a blank graph
+- add people deliberately
+- store only core family structure
+- derive relationships like siblings through traversal
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What It Does
 
-## React Compiler
+- Create and edit people on a graph canvas
+- Store only `parent_of` and `partner_of` relationships
+- Derive sibling relationships from shared parents
+- Add quick relatives: parent, child, partner, sibling
+- Search people and inspect/edit details in a side panel
+- Ask “Who is X to Y?” and inspect the BFS relationship path
+- Save locally in the browser
+- Import/export the graph as JSON
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Current Model
 
-## Expanding the ESLint configuration
+Vaṃsam intentionally keeps the stored graph minimal.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+Stored edges:
+- `parent_of`
+- `partner_of`
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+Derived relationships:
+- sibling
+- grandparent / grandchild
+- aunt / uncle
+- cousin
+- some Tamil kinship labels such as `mama`, `mami`, `chitti`, `athai`, `athimber`
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+This keeps the data model cleaner and avoids contradictory duplicate relationship edges.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Tech Stack
+
+- React
+- TypeScript
+- Vite
+- React Flow
+- ELK.js for auto-layout
+- IndexedDB via `idb`
+- GitHub Pages deployment via GitHub Actions
+
+## Local Development
+
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Then open the local Vite URL, usually:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```text
+http://localhost:5173/
 ```
+
+## Build
+
+```bash
+npm run build
+```
+
+## Data and Persistence
+
+- Workspace state is stored in IndexedDB in the browser
+- The app can export/import a JSON graph file
+- The default seed is a blank graph
+- Imported graphs are sanitized to the current core relationship model
+
+## Editing Workflow
+
+Recommended workflow:
+
+1. Add the first person.
+2. Add parents, children, and partners using quick actions.
+3. Use `Add sibling` only as a helper for creating shared-parent structure.
+4. Fill in details like dates, place, links, and private notes.
+
+## Notes
+
+- `Private notes` is only a UI/data distinction for now.
+- There is no auth layer yet.
+- The long-term plan is to gate private fields once authentication exists.
+
+## Status
+
+This is an actively evolving prototype. The current focus is:
+- clean local-first editing
+- minimal canonical relationship storage
+- better family-specific traversal and visualization

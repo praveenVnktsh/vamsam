@@ -116,6 +116,15 @@
   color: #5f6368;
 }
 
+.left-sidebar__romanized,
+.empty-canvas-state__romanized {
+  margin: 2px 0 0;
+  font-size: 0.76rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #80868b;
+}
+
 .mini-label {
   margin: 0 0 8px;
   font-size: 0.72rem;
