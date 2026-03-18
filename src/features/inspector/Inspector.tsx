@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
 import { displayName, personConnections, type PersonView } from '../../domain/graphOps'
+import { PersonTokenSelector } from '../PersonTokenSelector'
 
 type ConnectionComposerPredicate =
   | typeof EdgePredicate.PARENT_OF
@@ -70,21 +71,6 @@ export function Inspector({
         .sort((a, b) => displayName(a).localeCompare(displayName(b))),
     [allPeople, selectedPersonId],
   )
-  const normalizedLinkQuery = linkQuery.trim().toLowerCase()
-  const linkMatches = useMemo(
-    () =>
-      connectablePeople.filter((person) =>
-        displayName(person).toLowerCase().includes(normalizedLinkQuery),
-      ),
-    [connectablePeople, normalizedLinkQuery],
-  )
-  const exactMatch = useMemo(
-    () =>
-      connectablePeople.find(
-        (person) => displayName(person).trim().toLowerCase() === normalizedLinkQuery,
-      ) ?? null,
-    [connectablePeople, normalizedLinkQuery],
-  )
 
   function resetLinkComposer() {
     setLinkQuery('')
@@ -117,18 +103,7 @@ export function Inspector({
       return
     }
 
-    if (exactMatch) {
-      onConnectExistingPerson(exactMatch.id, linkPredicate)
-      resetLinkComposer()
-      return
-    }
-
-    if (linkMatches.length > 0) {
-      setLinkError('Choose one of the matching people or select add new.')
-      return
-    }
-
-    setLinkError(`No existing person found. Select "Add ${trimmed}" to create one.`)
+    setLinkError(`Choose an existing person or select "Add ${trimmed}" to create one.`)
   }
 
   function handleAddProfileLink() {
@@ -319,21 +294,22 @@ export function Inspector({
           <h3>Connections</h3>
           <div className="connection-create">
             <div className="connection-create__row">
-              <input
-                value={linkQuery}
-                onChange={(event) => {
-                  const nextQuery = event.target.value
-                  setLinkQuery(nextQuery)
-                  setLinkError('')
-                  const normalized = nextQuery.trim().toLowerCase()
-                  const matchedPerson = connectablePeople.find(
-                    (person) => displayName(person).trim().toLowerCase() === normalized,
-                  )
-                  setLinkSelection(
-                    matchedPerson ? { type: 'existing', id: matchedPerson.id } : null,
-                  )
-                }}
+              <PersonTokenSelector
+                label="Person"
+                people={connectablePeople}
+                query={linkQuery}
+                selectedPersonId={linkSelection?.type === 'existing' ? linkSelection.id : ''}
+                selection={linkSelection}
+                allowCreateNew
                 placeholder="Find existing or add new person"
+                onQueryChange={(value) => {
+                  setLinkQuery(value)
+                  setLinkError('')
+                }}
+                onSelectionChange={(selection) => {
+                  setLinkSelection(selection)
+                  setLinkError('')
+                }}
               />
               <select
                 value={linkPredicate}
@@ -351,46 +327,6 @@ export function Inspector({
                 Apply
               </button>
             </div>
-            {linkQuery.trim() && (
-              <div className="connection-picker">
-                {linkMatches.slice(0, 6).map((person) => (
-                  <button
-                    key={person.id}
-                    type="button"
-                    className={
-                      linkSelection?.type === 'existing' && linkSelection.id === person.id
-                        ? 'connection-picker__option active'
-                        : 'connection-picker__option'
-                    }
-                    onClick={() => {
-                      setLinkSelection({ type: 'existing', id: person.id })
-                      setLinkQuery(displayName(person))
-                      setLinkError('')
-                    }}
-                  >
-                    <span>{displayName(person)}</span>
-                    <small>Existing person</small>
-                  </button>
-                ))}
-                {!exactMatch && (
-                  <button
-                    type="button"
-                    className={
-                      linkSelection?.type === 'new'
-                        ? 'connection-picker__option active'
-                        : 'connection-picker__option'
-                    }
-                    onClick={() => {
-                      setLinkSelection({ type: 'new', name: linkQuery.trim() })
-                      setLinkError('')
-                    }}
-                  >
-                    <span>Add {linkQuery.trim()}</span>
-                    <small>Create new person</small>
-                  </button>
-                )}
-              </div>
-            )}
             {linkError && <p className="connection-create__error">{linkError}</p>}
           </div>
           <div className="quick-actions">

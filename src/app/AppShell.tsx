@@ -36,6 +36,7 @@ import {
   visibleEdges as getVisibleEdges,
   visiblePersonIds,
 } from '../domain/graphOps'
+import { PersonTokenSelector } from '../features/PersonTokenSelector'
 import { TreeCanvas } from '../features/canvas/TreeCanvas'
 import { Inspector } from '../features/inspector/Inspector'
 
@@ -159,8 +160,8 @@ export function AppShell({
         relationshipElement.offsetWidth,
         relationshipElement.offsetHeight,
         current ?? {
-          x: Math.max(12, stage.clientWidth - relationshipElement.offsetWidth - 18),
-          y: Math.max(18, stage.clientHeight - relationshipElement.offsetHeight - 18),
+          x: 12,
+          y: 12,
         },
       ),
     )
@@ -385,12 +386,6 @@ export function AppShell({
   const sortedPeople = useMemo(() => [...people].sort((a, b) => displayName(a).localeCompare(displayName(b))), [people])
 
   useEffect(() => {
-    if (sortedPeople.length === 0) return
-    setRelationshipFromId((current) => current || sortedPeople[0]?.id || '')
-    setRelationshipToId((current) => current || sortedPeople[1]?.id || sortedPeople[0]?.id || '')
-  }, [sortedPeople])
-
-  useEffect(() => {
     const person = peopleById.get(relationshipFromId)
     if (person) setRelationshipFromQuery(displayName(person))
   }, [peopleById, relationshipFromId])
@@ -455,6 +450,33 @@ export function AppShell({
     if (!canEdit) return
     if (!selectedPerson) return
     const result = addRelative(graph, selectedPerson, type)
+    setGraph(result.graph)
+    setSelectedPersonId(result.newPersonId)
+    setRightCollapsed(false)
+  }
+
+  function handleCanvasPersonQuickAction(
+    personId: string,
+    action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
+  ) {
+    if (!canEdit) return
+    const person = peopleById.get(personId)
+    if (!person) return
+
+    if (action === 'delete') {
+      if (!window.confirm(`Hard delete ${displayName(person)} and remove all related edges?`)) {
+        return
+      }
+      setGraph((current) => hardDeletePerson(current, personId))
+      if (selectedPersonId === personId) {
+        setSelectedPersonId(null)
+        setSelectedEdgeId(null)
+        setRightCollapsed(true)
+      }
+      return
+    }
+
+    const result = addRelative(graph, person, action)
     setGraph(result.graph)
     setSelectedPersonId(result.newPersonId)
     setRightCollapsed(false)
@@ -589,20 +611,6 @@ export function AppShell({
 
   const relationshipFrom = peopleById.get(relationshipFromId)
   const relationshipTo = peopleById.get(relationshipToId)
-  const shouldShowFromResults =
-    relationshipFromQuery.trim().length > 0 &&
-    (!relationshipFrom || relationshipFromQuery.trim() !== fullName(relationshipFrom))
-  const shouldShowToResults =
-    relationshipToQuery.trim().length > 0 &&
-    (!relationshipTo || relationshipToQuery.trim() !== fullName(relationshipTo))
-  const filteredFromPeople = sortedPeople.filter((person) =>
-    fullName(person).toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()) ||
-    displayName(person).toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()),
-  )
-  const filteredToPeople = sortedPeople.filter((person) =>
-    fullName(person).toLowerCase().includes(relationshipToQuery.trim().toLowerCase()) ||
-    displayName(person).toLowerCase().includes(relationshipToQuery.trim().toLowerCase()),
-  )
   const viewControlsStyle: CSSProperties | undefined = viewControlsPosition
     ? {
         left: `${viewControlsPosition.x}px`,
@@ -829,6 +837,7 @@ export function AppShell({
                   )
                 : undefined
             }
+            onPersonQuickAction={handleCanvasPersonQuickAction}
           />
 
           {!graphHasRenderablePeople(graph) && (
@@ -842,6 +851,21 @@ export function AppShell({
               </button>
             </div>
           )}
+
+          <button
+            type="button"
+            className="canvas-quick-add"
+            onClick={() =>
+              handleCreateStandalonePerson(
+                graphHasRenderablePeople(graph) ? 'New Person' : 'First Person',
+              )
+            }
+            disabled={!canEdit}
+            aria-label={graphHasRenderablePeople(graph) ? 'Add new person' : 'Add first person'}
+          >
+            <span className="canvas-quick-add__icon">+</span>
+            <span>{graphHasRenderablePeople(graph) ? 'New person' : 'First person'}</span>
+          </button>
 
           <div
             ref={viewControlsRef}
@@ -1047,66 +1071,55 @@ export function AppShell({
             {!relationshipDialogCollapsed && (
               <>
             <div className="relationship-dialog__controls">
-              <label>
-                <span>Person</span>
-                <input
-                  value={relationshipFromQuery}
-                  onChange={(event) => {
-                    setRelationshipFromQuery(event.target.value)
-                    if (relationshipFrom && event.target.value.trim() !== fullName(relationshipFrom)) {
-                      setRelationshipFromId('')
-                    }
+              <PersonTokenSelector
+                label="Person"
+                people={sortedPeople}
+                query={relationshipFromQuery}
+                selectedPersonId={relationshipFromId}
+                selection={relationshipFromId ? { type: 'existing', id: relationshipFromId } : null}
+                compact
+                showSecondaryText={false}
+                onQueryChange={setRelationshipFromQuery}
+                onSelectionChange={(selection) => {
+                  if (selection?.type === 'existing') {
+                    setRelationshipFromId(selection.id)
+                    return
+                  }
+                  setRelationshipFromId('')
+                }}
+              />
+              <PersonTokenSelector
+                label="Of"
+                people={sortedPeople}
+                query={relationshipToQuery}
+                selectedPersonId={relationshipToId}
+                selection={relationshipToId ? { type: 'existing', id: relationshipToId } : null}
+                compact
+                showSecondaryText={false}
+                onQueryChange={setRelationshipToQuery}
+                onSelectionChange={(selection) => {
+                  if (selection?.type === 'existing') {
+                    setRelationshipToId(selection.id)
+                    return
+                  }
+                  setRelationshipToId('')
+                }}
+              />
+              <div className="relationship-dialog__reverse">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => {
+                    setRelationshipFromId(relationshipToId)
+                    setRelationshipToId(relationshipFromId)
+                    setRelationshipFromQuery(relationshipToQuery)
+                    setRelationshipToQuery(relationshipFromQuery)
                   }}
-                  placeholder="Type a name"
-                />
-                {shouldShowFromResults && (
-                  <div className="relationship-dialog__results">
-                    {filteredFromPeople.slice(0, 6).map((person) => (
-                      <button
-                        key={person.id}
-                        type="button"
-                        className="relationship-dialog__result"
-                        onClick={() => {
-                          setRelationshipFromId(person.id)
-                          setRelationshipFromQuery(fullName(person))
-                        }}
-                      >
-                        {fullName(person)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </label>
-              <label>
-                <span>Of</span>
-                <input
-                  value={relationshipToQuery}
-                  onChange={(event) => {
-                    setRelationshipToQuery(event.target.value)
-                    if (relationshipTo && event.target.value.trim() !== fullName(relationshipTo)) {
-                      setRelationshipToId('')
-                    }
-                  }}
-                  placeholder="Type a name"
-                />
-                {shouldShowToResults && (
-                  <div className="relationship-dialog__results">
-                    {filteredToPeople.slice(0, 6).map((person) => (
-                      <button
-                        key={person.id}
-                        type="button"
-                        className="relationship-dialog__result"
-                        onClick={() => {
-                          setRelationshipToId(person.id)
-                          setRelationshipToQuery(fullName(person))
-                        }}
-                      >
-                        {fullName(person)}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </label>
+                  disabled={!relationshipFromId && !relationshipToId}
+                >
+                  Reverse
+                </button>
+              </div>
             </div>
             <div className="relationship-dialog__answer">
               {relationshipFrom && relationshipTo && relationshipResult ? (

@@ -156,9 +156,17 @@ function SupabaseApp() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, nextSession) => {
-      setSession(nextSession)
-      setTreeAccess(null)
-      setTreeError('')
+      setSession((currentSession) => {
+        const currentUserId = currentSession?.user.id ?? null
+        const nextUserId = nextSession?.user.id ?? null
+
+        if (currentUserId !== nextUserId) {
+          setTreeAccess(null)
+          setTreeError('')
+        }
+
+        return nextSession
+      })
       setSessionLoading(false)
     })
 
@@ -197,7 +205,7 @@ function SupabaseApp() {
   if (!isSupabaseConfigured) return <SetupScreen />
   if (sessionLoading) return <LoadingScreen label="Checking session..." />
   if (!session) return <AuthScreen />
-  if (treeLoading) return <LoadingScreen label="Loading family tree..." />
+  if (treeLoading && !treeAccess) return <LoadingScreen label="Loading family tree..." />
   if (treeError) {
     return (
       <main className="auth-screen">

@@ -41,12 +41,20 @@ type TreeCanvasProps = {
   onSelectEdge: (id: string | null) => void
   onMovePerson: (id: string, x: number, y: number) => void
   onMoveFamily: (memberIds: string[], dx: number, dy: number) => void
+  onPersonQuickAction: (
+    personId: string,
+    action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
+  ) => void
 }
 
 type PersonNodeData = {
   person: PersonView
   selected: boolean
   deemphasized: boolean
+  onQuickAction: (
+    personId: string,
+    action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
+  ) => void
 }
 
 type UnionNodeData = {
@@ -62,6 +70,10 @@ type FamilyNodeData = {
   avgX: number
   avgY: number
   memberIds: string[]
+  onQuickAction: (
+    personId: string,
+    action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
+  ) => void
 }
 
 type FlowCanvasNode = FlowNode<PersonNodeData | UnionNodeData | FamilyNodeData>
@@ -74,12 +86,19 @@ function sexToneClass(sex: string) {
 }
 
 function PersonNode({ data }: { data: PersonNodeData }) {
-  const { person, selected, deemphasized } = data
+  const { person, selected, deemphasized, onQuickAction } = data
 
   return (
     <div
       className={`${selected ? 'flow-person-card selected' : 'flow-person-card'} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
     >
+      <div className="flow-card-actions" role="toolbar" aria-label={`Quick actions for ${displayName(person)}`}>
+        <button type="button" title="Add parent" aria-label="Add parent" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'parent') }}>↑</button>
+        <button type="button" title="Add child" aria-label="Add child" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'child') }}>↓</button>
+        <button type="button" title="Add sibling" aria-label="Add sibling" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'sibling') }}>≋</button>
+        <button type="button" title="Add partner" aria-label="Add partner" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}>↔</button>
+        <button type="button" title="Delete node" aria-label="Delete node" className="danger" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}>×</button>
+      </div>
       <Handle id="top" type="target" position={Position.Top} className="flow-handle" />
       <Handle id="left" type="target" position={Position.Left} className="flow-handle" />
       <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
@@ -105,7 +124,7 @@ function UnionNode({ data }: { data: UnionNodeData }) {
 }
 
 function FamilyNode({ data }: { data: FamilyNodeData }) {
-  const { leftPerson, rightPerson, selectedPersonId, onSelectPerson, deemphasizedIds } = data
+  const { leftPerson, rightPerson, selectedPersonId, onSelectPerson, deemphasizedIds, onQuickAction } = data
 
   return (
     <div className="flow-family-card">
@@ -113,25 +132,36 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
       <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
       <div className="flow-family-card__members">
         {[leftPerson, rightPerson].map((person) => (
-          <button
+          <div
             key={person.id}
-            type="button"
             className={
               person.id === selectedPersonId
-                ? `flow-family-person active ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
-                : `flow-family-person ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
+                ? `flow-family-person-shell active ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
+                : `flow-family-person-shell ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
             }
-            onClick={(event) => {
-              event.stopPropagation()
-              onSelectPerson(person.id)
-            }}
           >
-            <span className="flow-person-photo">{person.photo}</span>
-            <span>
-              <strong>{displayName(person)}</strong>
-              <small>{person.years}</small>
-            </span>
-          </button>
+            <div className="flow-card-actions flow-card-actions-inline" role="toolbar" aria-label={`Quick actions for ${displayName(person)}`}>
+              <button type="button" title="Add parent" aria-label="Add parent" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'parent') }}>↑</button>
+              <button type="button" title="Add child" aria-label="Add child" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'child') }}>↓</button>
+              <button type="button" title="Add sibling" aria-label="Add sibling" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'sibling') }}>≋</button>
+              <button type="button" title="Add partner" aria-label="Add partner" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}>↔</button>
+              <button type="button" title="Delete node" aria-label="Delete node" className="danger" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}>×</button>
+            </div>
+            <button
+              type="button"
+              className="flow-family-person"
+              onClick={(event) => {
+                event.stopPropagation()
+                onSelectPerson(person.id)
+              }}
+            >
+              <span className="flow-person-photo">{person.photo}</span>
+              <span>
+                <strong>{displayName(person)}</strong>
+                <small>{person.years}</small>
+              </span>
+            </button>
+          </div>
         ))}
       </div>
     </div>
@@ -231,6 +261,7 @@ export function TreeCanvas({
   onSelectEdge,
   onMovePerson,
   onMoveFamily,
+  onPersonQuickAction,
 }: TreeCanvasProps) {
   const people = useMemo(
     () => graphPeople(graph).filter((person) => visibleIds.has(person.id)),
@@ -298,6 +329,7 @@ export function TreeCanvas({
             person,
             selected: person.id === selectedPersonId,
             deemphasized: deemphasizedIds.has(person.id),
+            onQuickAction: onPersonQuickAction,
           },
         }))
 
@@ -316,6 +348,7 @@ export function TreeCanvas({
           avgX: unit.avgX,
           avgY: unit.avgY,
           memberIds: unit.memberIds,
+          onQuickAction: onPersonQuickAction,
         },
       }))
 
@@ -332,6 +365,7 @@ export function TreeCanvas({
         person,
         selected: person.id === selectedPersonId,
         deemphasized: deemphasizedIds.has(person.id),
+        onQuickAction: onPersonQuickAction,
       },
     }))
 
@@ -392,7 +426,7 @@ export function TreeCanvas({
     })
 
     return [...personNodes, ...unionNodes]
-  }, [familyUnits, layoutMode, onSelectPerson, people, selectedPersonId, visibleEdges])
+  }, [familyUnits, layoutMode, onPersonQuickAction, onSelectPerson, people, selectedPersonId, visibleEdges])
 
   const flowEdges = useMemo<FlowEdge[]>(() => {
     if (layoutMode === 'family') {
