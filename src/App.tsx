@@ -36,7 +36,6 @@ function LoadingScreen({ label }: { label: string }) {
 }
 
 function AuthScreen() {
-  const [mode, setMode] = useState<'sign_in' | 'sign_up'>('sign_in')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState('')
@@ -49,15 +48,10 @@ function AuthScreen() {
     setSubmitting(true)
     setError('')
 
-    const response =
-      mode === 'sign_in'
-        ? await supabase.auth.signInWithPassword({ email, password })
-        : await supabase.auth.signUp({ email, password })
+    const response = await supabase.auth.signInWithPassword({ email, password })
 
     if (response.error) {
       setError(response.error.message)
-    } else if (mode === 'sign_up') {
-      setError('Account created. If email confirmation is enabled, verify the email before signing in.')
     }
 
     setSubmitting(false)
@@ -68,8 +62,8 @@ function AuthScreen() {
       <section className="auth-card">
         <p className="mini-label">வம்சம்</p>
         <p className="auth-card__romanized">Vaṃsam</p>
-        <h1>{mode === 'sign_in' ? 'Sign in' : 'Create account'}</h1>
-        <p>Use your own account. Shared passwords are intentionally not supported.</p>
+        <h1>Sign in</h1>
+        <p>Use an invited account. Self-signup is disabled.</p>
         <form className="auth-form" onSubmit={handleSubmit}>
           <label>
             <span>Email</span>
@@ -87,24 +81,14 @@ function AuthScreen() {
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              autoComplete={mode === 'sign_in' ? 'current-password' : 'new-password'}
+              autoComplete="current-password"
               required
             />
           </label>
           {error && <p className="auth-form__error">{error}</p>}
           <div className="auth-form__actions">
             <button type="submit" disabled={submitting}>
-              {submitting ? 'Working...' : mode === 'sign_in' ? 'Sign in' : 'Create account'}
-            </button>
-            <button
-              type="button"
-              className="secondary-button"
-              onClick={() => {
-                setMode((current) => (current === 'sign_in' ? 'sign_up' : 'sign_in'))
-                setError('')
-              }}
-            >
-              {mode === 'sign_in' ? 'Need an account?' : 'Have an account?'}
+              {submitting ? 'Working...' : 'Sign in'}
             </button>
           </div>
         </form>

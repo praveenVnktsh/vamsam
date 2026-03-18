@@ -36,7 +36,7 @@ type TreeCanvasProps = {
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
   autoCenter: boolean
-  flyToPersonRequest: number
+  flyToPersonRequest: { nonce: number; personId: string } | null
   onSelectPerson: (id: string) => void
   onSelectEdge: (id: string | null) => void
   onMovePerson: (id: string, x: number, y: number) => void
@@ -641,16 +641,16 @@ export function TreeCanvas({
   }, [autoCenter, nodes])
 
   useEffect(() => {
-    if (!flyToPersonRequest || !selectedPersonId) return
+    if (!flyToPersonRequest?.personId) return
     const instance = flowInstanceRef.current
     if (!instance || nodes.length === 0) return
 
     const targetNode =
-      nodes.find((node) => node.id === selectedPersonId) ??
+      nodes.find((node) => node.id === flyToPersonRequest.personId) ??
       nodes.find((node) => {
         if (node.type !== 'family') return false
         const data = node.data as FamilyNodeData
-        return data.memberIds.includes(selectedPersonId)
+        return data.memberIds.includes(flyToPersonRequest.personId)
       })
 
     if (!targetNode) return
@@ -663,7 +663,7 @@ export function TreeCanvas({
         maxZoom: 1.2,
       })
     })
-  }, [flyToPersonRequest, nodes, selectedPersonId])
+  }, [flyToPersonRequest, nodes])
 
   return (
     <div className="canvas">

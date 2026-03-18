@@ -68,7 +68,10 @@ export function AppShell({
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false)
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
-  const [flyToPersonRequest, setFlyToPersonRequest] = useState(0)
+  const [flyToPersonRequest, setFlyToPersonRequest] = useState<{
+    nonce: number
+    personId: string
+  } | null>(null)
   const [search, setSearch] = useState('')
   const [depth, setDepth] = useState<(typeof depthOptions)[number]>(99)
   const [viewMode, setViewMode] = useState<'overview' | 'focus' | 'lineage'>('overview')
@@ -1190,7 +1193,13 @@ export function AppShell({
               selectedPersonId={selectedPersonId ?? ''}
               visibleIds={visibleIds}
               allPeople={people}
-              onFlyToNode={() => setFlyToPersonRequest((current) => current + 1)}
+              onFlyToNode={() => {
+                if (!selectedPersonId) return
+                setFlyToPersonRequest((current) => ({
+                  nonce: (current?.nonce ?? 0) + 1,
+                  personId: selectedPersonId,
+                }))
+              }}
               onCreateStandalonePerson={handleCreateStandalonePerson}
               onQuickAddRelative={(type) => handleAddRelative(type)}
               onUpdateAttr={(key, value) =>
