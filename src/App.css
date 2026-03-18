@@ -151,6 +151,7 @@
 .search-field input,
 .search-field select,
 .form-grid input,
+.form-grid select,
 .form-grid textarea {
   width: 100%;
   border: 1px solid #dadce0;
@@ -163,6 +164,7 @@
 }
 
 .form-grid input.invalid-field,
+.form-grid select.invalid-field,
 .form-grid textarea.invalid-field {
   border-color: #d93025;
   background: #fff8f7;
@@ -444,6 +446,13 @@ select:focus-visible {
   gap: 6px;
 }
 
+.relationship-dialog__prompt {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 0.72rem;
+  color: #5f6368;
+}
+
 .relationship-dialog__controls label {
   display: grid;
   gap: 4px;
@@ -509,7 +518,7 @@ select:focus-visible {
 
 .view-mode-switch {
   display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 6px;
 }
 
@@ -615,7 +624,8 @@ select:focus-visible {
   display: flex;
   gap: 10px;
   align-items: center;
-  min-width: 148px;
+  width: 168px;
+  min-width: 168px;
   padding: 8px 10px;
   border: 1px solid #d7dbe0;
   border-radius: 10px;
@@ -623,13 +633,29 @@ select:focus-visible {
   box-shadow: 0 1px 2px rgba(60, 64, 67, 0.12);
 }
 
+.flow-person-card.sex-male,
+.flow-family-person.sex-male {
+  background: #fffdf6;
+}
+
+.flow-person-card.sex-female,
+.flow-family-person.sex-female {
+  background: #fff8fa;
+}
+
 .flow-person-card.selected {
   border-color: #4c8bf5;
   box-shadow: 0 0 0 2px rgba(76, 139, 245, 0.15);
 }
 
+.flow-person-card.deemphasized,
+.flow-family-person.deemphasized {
+  opacity: 0.32;
+}
+
 .flow-family-card {
-  min-width: 220px;
+  width: 320px;
+  min-width: 320px;
   padding: 8px;
   border: 1px solid #d7dbe0;
   border-radius: 12px;
@@ -649,7 +675,7 @@ select:focus-visible {
   gap: 8px;
   align-items: center;
   width: 100%;
-  padding: 6px 7px;
+  padding: 7px 8px;
   border: 1px solid #eceff1;
   border-radius: 9px;
   background: #fbfcfd;
@@ -663,16 +689,23 @@ select:focus-visible {
 
 .flow-family-person span:last-child {
   display: grid;
+  min-width: 0;
 }
 
 .flow-family-person strong {
-  font-size: 0.85rem;
+  font-size: 0.88rem;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-family-person small {
   font-size: 0.73rem;
   color: #5f6368;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-person-photo {
@@ -684,16 +717,23 @@ select:focus-visible {
 
 .flow-person-card div {
   display: grid;
+  min-width: 0;
 }
 
 .flow-person-card strong {
   font-size: 0.9rem;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-person-card small {
   font-size: 0.76rem;
   color: #5f6368;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .flow-union-node {
@@ -743,16 +783,39 @@ select:focus-visible {
   box-shadow: none;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  overflow: auto;
-  padding: 14px;
-  padding-top: 52px;
+  min-height: 0;
 }
 
-.section-heading h2 {
+.inspector-topbar {
+  flex: 0 0 auto;
+  padding: 52px 14px 10px;
+  border-bottom: 1px solid #e8eaed;
+  background: #ffffff;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspector-topbar h2 {
   margin: 0;
   font-size: 1.22rem;
   line-height: 1.05;
+}
+
+.inspector-topbar__action {
+  flex: 0 0 auto;
+}
+
+.inspector-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: #f6f6f7;
 }
 
 .inspector-section {
@@ -977,7 +1040,7 @@ select:focus-visible {
 
 .connection-item__inline {
   display: grid;
-  grid-template-columns: minmax(84px, 1.15fr) minmax(92px, 0.95fr) auto auto auto;
+  grid-template-columns: auto minmax(98px, 0.95fr) auto minmax(84px, 1.15fr) auto;
   gap: 6px;
   align-items: center;
 }
@@ -987,11 +1050,9 @@ select:focus-visible {
   min-width: 0;
 }
 
-.connection-item__direction {
+.connection-item__verb {
   color: #80868b;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  font-size: 0.6rem;
+  font-size: 0.72rem;
   white-space: nowrap;
 }
 
@@ -1012,6 +1073,70 @@ select:focus-visible {
   font-size: 0.88rem;
   line-height: 1.5;
   color: #5f6368;
+}
+
+.auth-screen {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  background:
+    linear-gradient(180deg, rgba(247, 244, 236, 0.9), rgba(255, 255, 255, 0.96)),
+    #fcfbf7;
+  padding: 24px;
+}
+
+.auth-card {
+  width: min(440px, 100%);
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #dadce0;
+  border-radius: 18px;
+  padding: 24px;
+  box-shadow: 0 18px 44px rgba(38, 41, 46, 0.08);
+}
+
+.auth-card-compact {
+  width: min(360px, 100%);
+}
+
+.auth-card h1 {
+  margin: 6px 0 10px;
+  font-size: 1.5rem;
+}
+
+.auth-card p {
+  margin: 0;
+  color: #5f6368;
+  line-height: 1.5;
+}
+
+.auth-card__romanized,
+.left-sidebar__account {
+  margin-top: 4px;
+  font-size: 0.78rem;
+  color: #7a7f87;
+}
+
+.auth-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 4px;
+}
+
+.auth-form__actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 6px;
+}
+
+.auth-form__error {
+  color: #b3261e;
+  font-size: 0.84rem;
 }
 
 @media (max-width: 1280px) {

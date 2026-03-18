@@ -1,21 +1,31 @@
 import type { CSSProperties, ChangeEvent } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { sampleGraph } from '../data/sampleGraph'
-import { clearGraph, loadGraph, saveGraph } from '../data/storage'
+import {
+  decryptGraphBackup,
+  encryptGraphBackup,
+  isEncryptedBackupFile,
+} from '../data/backupCrypto'
 import { EdgePredicate, type GraphSchema, validateGraph } from '../domain/graph'
 import {
   addConnectedPerson,
   addConnection,
+  addParentPerson,
   addRelative,
   addStandalonePerson,
   autoLayoutGraph,
+  connectPeopleAsSiblings,
   deleteEdge,
+  descendantPersonIds,
+  displayName,
+  expandNeighborhood,
+  fullName,
   graphHasRenderablePeople,
   graphPeople,
   hardDeletePerson,
   personMap,
   reverseEdge,
   resolveRelationship,
+  addSiblingPerson,
   sanitizeGraphForCoreRelationships,
   shortestBloodPath,
   softDeletePerson,
@@ -31,25 +41,37 @@ import { Inspector } from '../features/inspector/Inspector'
 
 const depthOptions = [1, 2, 3, 99] as const
 
-function shouldReplacePersistedGraph(persisted: GraphSchema): boolean {
-  return String(persisted.metadata.source ?? '') !== 'blank-slate-v2'
+type AppShellProps = {
+  initialGraph: GraphSchema
+  userEmail: string
+  canEdit: boolean
+  onPersistGraph: (graph: GraphSchema) => Promise<void>
+  onResetGraph: () => Promise<GraphSchema>
+  onSignOut: () => Promise<void> | void
 }
 
-export function AppShell() {
+export function AppShell({
+  initialGraph,
+  userEmail,
+  canEdit,
+  onPersistGraph,
+  onResetGraph,
+  onSignOut,
+}: AppShellProps) {
   const centerStageRef = useRef<HTMLElement | null>(null)
   const viewControlsRef = useRef<HTMLDivElement | null>(null)
   const relationshipDialogRef = useRef<HTMLDivElement | null>(null)
-  const [graph, setGraph] = useState<GraphSchema>(sampleGraph)
-  const [isHydrated, setIsHydrated] = useState(false)
+  const [graph, setGraph] = useState<GraphSchema>(initialGraph)
   const [leftCollapsed, setLeftCollapsed] = useState(true)
   const [rightCollapsed, setRightCollapsed] = useState(true)
   const [rightSidebarWidth, setRightSidebarWidth] = useState(440)
   const [isResizingRightSidebar, setIsResizingRightSidebar] = useState(false)
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+  const [flyToPersonRequest, setFlyToPersonRequest] = useState(0)
   const [search, setSearch] = useState('')
   const [depth, setDepth] = useState<(typeof depthOptions)[number]>(99)
-  const [viewMode, setViewMode] = useState<'overview' | 'focus'>('overview')
+  const [viewMode, setViewMode] = useState<'overview' | 'focus' | 'lineage'>('overview')
   const [showRelationshipGraph, setShowRelationshipGraph] = useState(false)
   const [includePartners, setIncludePartners] = useState(true)
   const includeNonBlood = false
@@ -69,6 +91,7 @@ export function AppShell() {
   const [relationshipFromQuery, setRelationshipFromQuery] = useState('')
   const [relationshipToQuery, setRelationshipToQuery] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const encryptedFileInputRef = useRef<HTMLInputElement | null>(null)
   const graphRef = useRef(graph)
   const layoutRunRef = useRef(0)
   const overlayDragRef = useRef<{
@@ -101,6 +124,10 @@ export function AppShell() {
   useEffect(() => {
     graphRef.current = graph
   }, [graph])
+
+  useEffect(() => {
+    setGraph(initialGraph)
+  }, [initialGraph])
 
   useEffect(() => {
     const stage = centerStageRef.current
@@ -164,43 +191,14 @@ export function AppShell() {
   }, [isResizingRightSidebar])
 
   useEffect(() => {
-    let ignore = false
+    const timeoutId = window.setTimeout(() => {
+      void onPersistGraph(graph)
+    }, 400)
 
-    async function hydrate() {
-      const persisted = await loadGraph()
-      if (ignore) return
-
-      if (persisted) {
-        try {
-          validateGraph(persisted)
-          if (shouldReplacePersistedGraph(persisted)) {
-            setGraph(sampleGraph)
-            await saveGraph(sampleGraph)
-          } else {
-            setGraph(sanitizeGraphForCoreRelationships(persisted))
-          }
-        } catch {
-          setGraph(sampleGraph)
-          await saveGraph(sampleGraph)
-        }
-      } else {
-        setGraph(sampleGraph)
-        await saveGraph(sampleGraph)
-      }
-
-      setIsHydrated(true)
-    }
-
-    hydrate()
     return () => {
-      ignore = true
+      window.clearTimeout(timeoutId)
     }
-  }, [])
-
-  useEffect(() => {
-    if (!isHydrated) return
-    void saveGraph(graph)
-  }, [graph, isHydrated])
+  }, [graph, onPersistGraph])
 
   function startOverlayDrag(
     kind: 'view' | 'relationship',
@@ -291,15 +289,31 @@ export function AppShell() {
   const people = useMemo(() => graphPeople(graph), [graph])
   const peopleById = useMemo(() => personMap(people), [people])
   const selectedPerson = selectedPersonId ? peopleById.get(selectedPersonId) ?? null : null
+  const lineageBloodIds = useMemo(
+    () =>
+      viewMode === 'lineage'
+        ? descendantPersonIds(graph, selectedPerson?.id ?? '', false)
+        : new Set<string>(),
+    [graph, selectedPerson, viewMode],
+  )
 
   const visibleIds = useMemo(
     () => {
       if (showRelationshipGraph && relationshipFromId && relationshipToId) {
-        return new Set(shortestPersonPath(graph, relationshipFromId, relationshipToId))
+        const pathIds = shortestPersonPath(graph, relationshipFromId, relationshipToId)
+        return expandNeighborhood(graph, pathIds, 2, true, includeNonBlood)
       }
 
       if (viewMode === 'overview') {
         return new Set(people.map((person) => person.id))
+      }
+
+      if (viewMode === 'lineage') {
+        return descendantPersonIds(
+          graph,
+          selectedPerson?.id ?? '',
+          includePartners,
+        )
       }
 
       return visiblePersonIds(
@@ -355,6 +369,8 @@ export function AppShell() {
       if (!normalized) return true
 
       return (
+        displayName(person).toLowerCase().includes(normalized) ||
+        fullName(person).toLowerCase().includes(normalized) ||
         person.label.toLowerCase().includes(normalized) ||
         person.branch.toLowerCase().includes(normalized) ||
         person.birthPlace.toLowerCase().includes(normalized) ||
@@ -363,10 +379,7 @@ export function AppShell() {
     })
   }, [people, search, visibleIds])
 
-  const sortedPeople = useMemo(
-    () => [...people].sort((a, b) => a.preferredName.localeCompare(b.preferredName)),
-    [people],
-  )
+  const sortedPeople = useMemo(() => [...people].sort((a, b) => displayName(a).localeCompare(displayName(b))), [people])
 
   useEffect(() => {
     if (sortedPeople.length === 0) return
@@ -376,17 +389,15 @@ export function AppShell() {
 
   useEffect(() => {
     const person = peopleById.get(relationshipFromId)
-    if (person) setRelationshipFromQuery(person.preferredName)
+    if (person) setRelationshipFromQuery(displayName(person))
   }, [peopleById, relationshipFromId])
 
   useEffect(() => {
     const person = peopleById.get(relationshipToId)
-    if (person) setRelationshipToQuery(person.preferredName)
+    if (person) setRelationshipToQuery(displayName(person))
   }, [peopleById, relationshipToId])
 
   useEffect(() => {
-    if (!isHydrated) return
-
     const runId = layoutRunRef.current + 1
     layoutRunRef.current = runId
 
@@ -414,7 +425,6 @@ export function AppShell() {
     depth,
     includeNonBlood,
     includePartners,
-    isHydrated,
     layoutMode,
     relationshipFromId,
     relationshipToId,
@@ -439,6 +449,7 @@ export function AppShell() {
   }
 
   function handleAddRelative(type: 'parent' | 'child' | 'partner' | 'sibling') {
+    if (!canEdit) return
     if (!selectedPerson) return
     const result = addRelative(graph, selectedPerson, type)
     setGraph(result.graph)
@@ -447,6 +458,7 @@ export function AppShell() {
   }
 
   function handleCreateStandalonePerson(defaultName = 'New Person') {
+    if (!canEdit) return
     const result = addStandalonePerson(graph, defaultName)
     setGraph(result.graph)
     setSelectedPersonId(result.newPersonId)
@@ -480,6 +492,32 @@ export function AppShell() {
     URL.revokeObjectURL(url)
   }
 
+  async function handleEncryptedExport() {
+    const passphrase = window.prompt('Enter a passphrase for the encrypted backup.')
+    if (!passphrase) return
+
+    const confirmation = window.prompt('Re-enter the passphrase to confirm.')
+    if (confirmation !== passphrase) {
+      window.alert('Passphrases did not match. Encrypted backup was not created.')
+      return
+    }
+
+    try {
+      const encryptedBackup = await encryptGraphBackup(graph, passphrase)
+      const blob = new Blob([JSON.stringify(encryptedBackup, null, 2)], {
+        type: 'application/json',
+      })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'family-graph.encrypted.json'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch {
+      window.alert('Unable to create encrypted backup.')
+    }
+  }
+
   function handleImport(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     if (!file) return
@@ -501,9 +539,38 @@ export function AppShell() {
     event.target.value = ''
   }
 
+  function handleEncryptedImport(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = async () => {
+      try {
+        const parsed = JSON.parse(String(reader.result))
+        if (!isEncryptedBackupFile(parsed)) {
+          throw new Error('not encrypted')
+        }
+
+        const passphrase = window.prompt('Enter the passphrase for this encrypted backup.')
+        if (!passphrase) return
+
+        const decryptedGraph = await decryptGraphBackup(parsed, passphrase)
+        const sanitized = sanitizeGraphForCoreRelationships(decryptedGraph)
+        validateGraph(sanitized)
+        setGraph(sanitized)
+        setSelectedPersonId(null)
+        setRightCollapsed(true)
+      } catch {
+        window.alert('Unable to decrypt that backup. Check the passphrase and file.')
+      }
+    }
+    reader.readAsText(file)
+    event.target.value = ''
+  }
+
   async function handleReset() {
-    await clearGraph()
-    setGraph(sampleGraph)
+    const resetGraph = await onResetGraph()
+    setGraph(resetGraph)
     setSelectedPersonId(null)
     setRightCollapsed(true)
   }
@@ -519,11 +586,19 @@ export function AppShell() {
 
   const relationshipFrom = peopleById.get(relationshipFromId)
   const relationshipTo = peopleById.get(relationshipToId)
+  const shouldShowFromResults =
+    relationshipFromQuery.trim().length > 0 &&
+    (!relationshipFrom || relationshipFromQuery.trim() !== fullName(relationshipFrom))
+  const shouldShowToResults =
+    relationshipToQuery.trim().length > 0 &&
+    (!relationshipTo || relationshipToQuery.trim() !== fullName(relationshipTo))
   const filteredFromPeople = sortedPeople.filter((person) =>
-    person.preferredName.toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()),
+    fullName(person).toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()) ||
+    displayName(person).toLowerCase().includes(relationshipFromQuery.trim().toLowerCase()),
   )
   const filteredToPeople = sortedPeople.filter((person) =>
-    person.preferredName.toLowerCase().includes(relationshipToQuery.trim().toLowerCase()),
+    fullName(person).toLowerCase().includes(relationshipToQuery.trim().toLowerCase()) ||
+    displayName(person).toLowerCase().includes(relationshipToQuery.trim().toLowerCase()),
   )
   const viewControlsStyle: CSSProperties | undefined = viewControlsPosition
     ? {
@@ -573,6 +648,7 @@ export function AppShell() {
               <p className="mini-label">வம்சம்</p>
               <p className="left-sidebar__romanized">Vaṃsam</p>
               <h1>{String(graph.metadata.treeName ?? 'வம்சம்')}</h1>
+              <p className="left-sidebar__account">{userEmail}</p>
             </div>
           </div>
 
@@ -589,17 +665,17 @@ export function AppShell() {
 
           <div className="left-sidebar__section">
             <div className="left-sidebar__actions">
-              <button type="button" onClick={() => handleCreateStandalonePerson('New Person')}>
+              <button type="button" onClick={() => handleCreateStandalonePerson('New Person')} disabled={!canEdit}>
                 {graphHasRenderablePeople(graph) ? 'Add person' : 'Add first person'}
               </button>
-              <button type="button" onClick={() => handleAddRelative('child')} disabled={!selectedPerson}>
+              <button type="button" onClick={() => handleAddRelative('child')} disabled={!selectedPerson || !canEdit}>
                 Add child
               </button>
               <button
                 type="button"
                 className="secondary-button"
                 onClick={() => handleAddRelative('partner')}
-                disabled={!selectedPerson}
+                disabled={!selectedPerson || !canEdit}
               >
                 Add partner
               </button>
@@ -607,7 +683,7 @@ export function AppShell() {
                 type="button"
                 className="secondary-button"
                 onClick={() => handleAddRelative('parent')}
-                disabled={!selectedPerson}
+                disabled={!selectedPerson || !canEdit}
               >
                 Add parent
               </button>
@@ -615,7 +691,7 @@ export function AppShell() {
                 type="button"
                 className="secondary-button"
                 onClick={() => handleAddRelative('sibling')}
-                disabled={!selectedPerson}
+                disabled={!selectedPerson || !canEdit}
               >
                 Add sibling
               </button>
@@ -637,9 +713,31 @@ export function AppShell() {
               <button
                 type="button"
                 className="secondary-button"
+                onClick={() => void handleEncryptedExport()}
+              >
+                Export encrypted
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => encryptedFileInputRef.current?.click()}
+              >
+                Import encrypted
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
                 onClick={() => void handleReset()}
+                disabled={!canEdit}
               >
                 Reset workspace
+              </button>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void onSignOut()}
+              >
+                Sign out
               </button>
               <input
                 ref={fileInputRef}
@@ -647,6 +745,13 @@ export function AppShell() {
                 type="file"
                 accept="application/json"
                 onChange={handleImport}
+              />
+              <input
+                ref={encryptedFileInputRef}
+                hidden
+                type="file"
+                accept="application/json"
+                onChange={handleEncryptedImport}
               />
             </div>
           </div>
@@ -674,7 +779,7 @@ export function AppShell() {
                   <span className="person-list-index">{index + 1}</span>
                   <span className="person-list-avatar">{person.photo}</span>
                   <span>
-                    <strong>{person.preferredName}</strong>
+                    <strong>{displayName(person)}</strong>
                     <small>{person.years || person.currentResidence || person.birthPlace}</small>
                   </span>
                 </button>
@@ -689,27 +794,37 @@ export function AppShell() {
           <TreeCanvas
             graph={graph}
             visibleIds={visibleIds}
+            deemphasizedIds={
+              viewMode === 'lineage'
+                ? new Set(
+                    [...visibleIds].filter((id) => !lineageBloodIds.has(id)),
+                  )
+                : new Set()
+            }
             visibleEdges={visibleGraphEdges}
             selectedPersonId={selectedPersonId ?? ''}
             selectedEdgeId={selectedEdgeId}
             layoutMode={layoutMode}
             autoCenter={showRelationshipGraph}
+            flyToPersonRequest={flyToPersonRequest}
             onSelectPerson={handleSelectPerson}
             onSelectEdge={setSelectedEdgeId}
             onMovePerson={(id, x, y) =>
-              setGraph((current) => updatePersonPosition(current, id, x, y))
+              canEdit ? setGraph((current) => updatePersonPosition(current, id, x, y)) : undefined
             }
             onMoveFamily={(memberIds, dx, dy) =>
-              setGraph((current) =>
-                memberIds.reduce(
-                  (nextGraph, memberId) => {
-                    const person = graphPeople(nextGraph).find((candidate) => candidate.id === memberId)
-                    if (!person) return nextGraph
-                    return updatePersonPosition(nextGraph, memberId, person.x + dx, person.y + dy)
-                  },
-                  current,
-                ),
-              )
+              canEdit
+                ? setGraph((current) =>
+                    memberIds.reduce(
+                      (nextGraph, memberId) => {
+                        const person = graphPeople(nextGraph).find((candidate) => candidate.id === memberId)
+                        if (!person) return nextGraph
+                        return updatePersonPosition(nextGraph, memberId, person.x + dx, person.y + dy)
+                      },
+                      current,
+                    ),
+                  )
+                : undefined
             }
           />
 
@@ -719,7 +834,7 @@ export function AppShell() {
               <p className="empty-canvas-state__romanized">Vaṃsam</p>
               <h2>Add the first person.</h2>
               <p>Then use quick actions to add parents, children, partners, and siblings through shared parents.</p>
-              <button type="button" onClick={() => handleCreateStandalonePerson('First Person')}>
+              <button type="button" onClick={() => handleCreateStandalonePerson('First Person')} disabled={!canEdit}>
                 Add first person
               </button>
             </div>
@@ -758,7 +873,9 @@ export function AppShell() {
                 <span className="floating-controls__value">
                   {viewMode === 'overview'
                     ? 'Overview'
-                    : `${depth} hops`}
+                    : viewMode === 'lineage'
+                      ? 'Lineage'
+                      : `${depth} hops`}
                 </span>
                 <span className="floating-controls__chevron">
                   {viewControlsCollapsed ? '+' : '-'}
@@ -789,6 +906,17 @@ export function AppShell() {
                       }}
                     >
                       Focus
+                    </button>
+                    <button
+                      type="button"
+                      className={viewMode === 'lineage' ? 'view-mode-pill active' : 'view-mode-pill'}
+                      onClick={() => {
+                        setViewMode('lineage')
+                        setShowRelationshipGraph(false)
+                      }}
+                      disabled={!selectedPerson}
+                    >
+                      Lineage
                     </button>
                   </div>
                   <label className="depth-slider">
@@ -905,7 +1033,7 @@ export function AppShell() {
               <div className="floating-controls__header-actions">
                 <span className="floating-controls__value">
                   {relationshipFrom && relationshipTo
-                    ? `${relationshipFrom.preferredName} -> ${relationshipTo.preferredName}`
+                    ? `${displayName(relationshipFrom)} -> ${displayName(relationshipTo)}`
                     : 'Finder'}
                 </span>
                 <span className="floating-controls__chevron">
@@ -917,61 +1045,97 @@ export function AppShell() {
               <>
             <div className="relationship-dialog__controls">
               <label>
-                <span>Who is</span>
+                <span>Person</span>
                 <input
                   value={relationshipFromQuery}
-                  onChange={(event) => setRelationshipFromQuery(event.target.value)}
+                  onChange={(event) => {
+                    setRelationshipFromQuery(event.target.value)
+                    if (relationshipFrom && event.target.value.trim() !== fullName(relationshipFrom)) {
+                      setRelationshipFromId('')
+                    }
+                  }}
                   placeholder="Type a name"
                 />
-                <div className="relationship-dialog__results">
-                  {filteredFromPeople.slice(0, 6).map((person) => (
-                    <button
-                      key={person.id}
-                      type="button"
-                      className="relationship-dialog__result"
-                      onClick={() => {
-                        setRelationshipFromId(person.id)
-                        setRelationshipFromQuery(person.preferredName)
-                      }}
-                    >
-                      {person.preferredName}
-                    </button>
-                  ))}
-                </div>
+                {shouldShowFromResults && (
+                  <div className="relationship-dialog__results">
+                    {filteredFromPeople.slice(0, 6).map((person) => (
+                      <button
+                        key={person.id}
+                        type="button"
+                        className="relationship-dialog__result"
+                        onClick={() => {
+                          setRelationshipFromId(person.id)
+                          setRelationshipFromQuery(fullName(person))
+                        }}
+                      >
+                        {fullName(person)}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </label>
               <label>
-                <span>to</span>
+                <span>Of</span>
                 <input
                   value={relationshipToQuery}
-                  onChange={(event) => setRelationshipToQuery(event.target.value)}
+                  onChange={(event) => {
+                    setRelationshipToQuery(event.target.value)
+                    if (relationshipTo && event.target.value.trim() !== fullName(relationshipTo)) {
+                      setRelationshipToId('')
+                    }
+                  }}
                   placeholder="Type a name"
                 />
-                <div className="relationship-dialog__results">
-                  {filteredToPeople.slice(0, 6).map((person) => (
-                    <button
-                      key={person.id}
-                      type="button"
-                      className="relationship-dialog__result"
-                      onClick={() => {
-                        setRelationshipToId(person.id)
-                        setRelationshipToQuery(person.preferredName)
-                      }}
-                    >
-                      {person.preferredName}
-                    </button>
-                  ))}
-                </div>
+                {shouldShowToResults && (
+                  <div className="relationship-dialog__results">
+                    {filteredToPeople.slice(0, 6).map((person) => (
+                      <button
+                        key={person.id}
+                        type="button"
+                        className="relationship-dialog__result"
+                        onClick={() => {
+                          setRelationshipToId(person.id)
+                          setRelationshipToQuery(fullName(person))
+                        }}
+                      >
+                        {fullName(person)}
+                      </button>
+                    ))}
+                  </div>
+                )}
               </label>
             </div>
             <div className="relationship-dialog__answer">
               {relationshipFrom && relationshipTo && relationshipResult ? (
                 <>
                   <strong>
-                    {relationshipFrom.preferredName} is{' '}
-                    {relationshipResult.label || 'connected to'} {relationshipTo.preferredName}.
+                    {relationshipResult.labels || relationshipResult.label
+                      ? `${displayName(relationshipFrom)} is ${
+                          relationshipResult.labels
+                            ? relationshipResult.labels.en
+                            : relationshipResult.label
+                        } of ${displayName(relationshipTo)}.`
+                      : `${displayName(relationshipFrom)} is connected to ${displayName(
+                          relationshipTo,
+                        )}.`}
                   </strong>
-                  {relationshipResult.tamilLabel && (
-                    <p>Tamil: {relationshipResult.tamilLabel}</p>
+                  {relationshipResult.labels ? (
+                    <p>
+                      {relationshipResult.labels.en} / {relationshipResult.labels.taLatin} /{' '}
+                      {relationshipResult.labels.hiLatin}
+                    </p>
+                  ) : relationshipResult.label ? (
+                    <p>{relationshipResult.label}</p>
+                  ) : (
+                    <p>Connected in the current graph.</p>
+                  )}
+                  {relationshipResult.socialLabel && (
+                    <p>Social: {relationshipResult.socialLabel}</p>
+                  )}
+                  {relationshipResult.labels && (
+                    <p>
+                      Tamil: {relationshipResult.labels.ta} · Hindi: {relationshipResult.labels.hi}
+                    </p>
                   )}
                   {bloodPath.length > 1 ? (
                     <p>Connected by blood by {bloodPath.length - 1} hops.</p>
@@ -987,7 +1151,7 @@ export function AppShell() {
                       className="secondary-button"
                       onClick={() => setShowRelationshipGraph((current) => !current)}
                     >
-                      {showRelationshipGraph ? 'Hide BFS subgraph' : 'Show BFS subgraph'}
+                      {showRelationshipGraph ? 'Hide family' : 'Show family'}
                     </button>
                   </div>
                 </>
@@ -1026,42 +1190,65 @@ export function AppShell() {
               selectedPersonId={selectedPersonId ?? ''}
               visibleIds={visibleIds}
               allPeople={people}
+              onFlyToNode={() => setFlyToPersonRequest((current) => current + 1)}
               onCreateStandalonePerson={handleCreateStandalonePerson}
               onQuickAddRelative={(type) => handleAddRelative(type)}
               onUpdateAttr={(key, value) =>
-                setGraph((current) =>
-                  updatePersonAttr(current, selectedPersonId ?? '', key, value),
-                )
+                canEdit
+                  ? setGraph((current) =>
+                      updatePersonAttr(current, selectedPersonId ?? '', key, value),
+                    )
+                  : undefined
               }
               onUpdateConnection={(edgeId, predicate) =>
-                setGraph((current) =>
-                  updateEdge(current, edgeId, {
-                    predicate: predicate as GraphSchema['edges'][number]['predicate'],
-                  }),
-                )
+                canEdit
+                  ? setGraph((current) =>
+                      updateEdge(current, edgeId, {
+                        predicate: predicate as GraphSchema['edges'][number]['predicate'],
+                      }),
+                    )
+                  : undefined
               }
               onReverseConnection={(edgeId) =>
-                setGraph((current) => reverseEdge(current, edgeId))
+                canEdit ? setGraph((current) => reverseEdge(current, edgeId)) : undefined
               }
               onDeleteConnection={(edgeId) =>
-                setGraph((current) => deleteEdge(current, edgeId))
+                canEdit ? setGraph((current) => deleteEdge(current, edgeId)) : undefined
               }
               onAddConnectedPerson={(predicate, preferredName) => {
-                const result = addConnectedPerson(graph, selectedPerson, predicate, preferredName)
+                if (!canEdit) return
+                const result =
+                  predicate === 'sibling'
+                    ? addSiblingPerson(graph, selectedPerson, preferredName)
+                    : predicate === 'child'
+                      ? addParentPerson(graph, selectedPerson, preferredName)
+                    : addConnectedPerson(graph, selectedPerson, predicate, preferredName)
                 setGraph(result.graph)
                 setSelectedPersonId(result.newPersonId)
               }}
               onConnectExistingPerson={(targetId, predicate) =>
-                setGraph((current) =>
-                  addConnection(
-                    current,
-                    selectedPerson.id,
-                    targetId,
-                    predicate as EdgePredicate,
-                  ),
-                )
+                canEdit
+                  ? setGraph((current) =>
+                      predicate === 'sibling'
+                        ? connectPeopleAsSiblings(current, selectedPerson.id, targetId)
+                        : predicate === 'child'
+                          ? addConnection(
+                              current,
+                              targetId,
+                              selectedPerson.id,
+                              EdgePredicate.PARENT_OF,
+                            )
+                          : addConnection(
+                              current,
+                              selectedPerson.id,
+                              targetId,
+                              predicate as EdgePredicate,
+                            ),
+                    )
+                  : undefined
               }
               onSoftDeletePerson={() => {
+                if (!canEdit) return
                 if (!selectedPersonId) return
                 if (!window.confirm('Soft delete this person and remove their personal information?')) {
                   return
@@ -1069,12 +1256,15 @@ export function AppShell() {
                 setGraph((current) => softDeletePerson(current, selectedPersonId))
               }}
               onHardDeletePerson={() => {
+                if (!canEdit) return
                 if (!selectedPersonId) return
-                if (!window.confirm('Hard delete this node by unlinking all related edges?')) {
+                if (!window.confirm('Hard delete this node and remove all related edges?')) {
                   return
                 }
                 setGraph((current) => hardDeletePerson(current, selectedPersonId))
+                setSelectedPersonId(null)
                 setSelectedEdgeId(null)
+                setRightCollapsed(true)
               }}
             />
           )}

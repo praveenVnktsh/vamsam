@@ -17,7 +17,7 @@ import {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
-import { graphPeople, personMap, type PersonView } from '../../domain/graphOps'
+import { displayName, graphPeople, personMap, type PersonView } from '../../domain/graphOps'
 
 const X_SCALE = 10
 const Y_SCALE = 7
@@ -30,11 +30,13 @@ function snapTo(value: number, step: number): number {
 type TreeCanvasProps = {
   graph: GraphSchema
   visibleIds: Set<string>
+  deemphasizedIds: Set<string>
   visibleEdges: GraphSchema['edges']
   selectedPersonId: string
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
   autoCenter: boolean
+  flyToPersonRequest: number
   onSelectPerson: (id: string) => void
   onSelectEdge: (id: string | null) => void
   onMovePerson: (id: string, x: number, y: number) => void
@@ -44,6 +46,7 @@ type TreeCanvasProps = {
 type PersonNodeData = {
   person: PersonView
   selected: boolean
+  deemphasized: boolean
 }
 
 type UnionNodeData = {
@@ -55,6 +58,7 @@ type FamilyNodeData = {
   rightPerson: PersonView
   selectedPersonId: string
   onSelectPerson: (id: string) => void
+  deemphasizedIds: Set<string>
   avgX: number
   avgY: number
   memberIds: string[]
@@ -62,18 +66,27 @@ type FamilyNodeData = {
 
 type FlowCanvasNode = FlowNode<PersonNodeData | UnionNodeData | FamilyNodeData>
 
+function sexToneClass(sex: string) {
+  const normalized = sex.trim().toLowerCase()
+  if (normalized === 'female') return 'sex-female'
+  if (normalized === 'male') return 'sex-male'
+  return 'sex-unspecified'
+}
+
 function PersonNode({ data }: { data: PersonNodeData }) {
-  const { person, selected } = data
+  const { person, selected, deemphasized } = data
 
   return (
-    <div className={selected ? 'flow-person-card selected' : 'flow-person-card'}>
+    <div
+      className={`${selected ? 'flow-person-card selected' : 'flow-person-card'} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
+    >
       <Handle id="top" type="target" position={Position.Top} className="flow-handle" />
       <Handle id="left" type="target" position={Position.Left} className="flow-handle" />
       <Handle id="bottom" type="source" position={Position.Bottom} className="flow-handle" />
       <Handle id="right" type="source" position={Position.Right} className="flow-handle" />
       <span className="flow-person-photo">{person.photo}</span>
       <div>
-        <strong>{person.preferredName}</strong>
+        <strong>{displayName(person)}</strong>
         <small>{person.years}</small>
       </div>
     </div>
@@ -92,7 +105,7 @@ function UnionNode({ data }: { data: UnionNodeData }) {
 }
 
 function FamilyNode({ data }: { data: FamilyNodeData }) {
-  const { leftPerson, rightPerson, selectedPersonId, onSelectPerson } = data
+  const { leftPerson, rightPerson, selectedPersonId, onSelectPerson, deemphasizedIds } = data
 
   return (
     <div className="flow-family-card">
@@ -105,8 +118,8 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
             type="button"
             className={
               person.id === selectedPersonId
-                ? 'flow-family-person active'
-                : 'flow-family-person'
+                ? `flow-family-person active ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
+                : `flow-family-person ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
             }
             onClick={(event) => {
               event.stopPropagation()
@@ -115,7 +128,7 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
           >
             <span className="flow-person-photo">{person.photo}</span>
             <span>
-              <strong>{person.preferredName}</strong>
+              <strong>{displayName(person)}</strong>
               <small>{person.years}</small>
             </span>
           </button>
@@ -154,6 +167,29 @@ function edgeStyle(predicate: EdgePredicate) {
   return { stroke: 'rgba(84, 95, 87, 0.88)', strokeWidth: 2.5 }
 }
 
+function familyConnectionStyle(predicate: EdgePredicate) {
+  const base = edgeStyle(predicate)
+  return {
+    ...base,
+    stroke:
+      predicate === EdgePredicate.PARTNER_OF
+        ? 'rgba(191, 101, 43, 0.48)'
+        : predicate === EdgePredicate.PARENT_OF
+          ? 'rgba(26, 59, 66, 0.4)'
+          : 'rgba(84, 95, 87, 0.42)',
+    strokeWidth: 1.6,
+  }
+}
+
+function deemphasizedEdgeStyle(predicate: EdgePredicate) {
+  const base = edgeStyle(predicate)
+  return {
+    ...base,
+    stroke: base.stroke.replace(/0\.\d+\)/, '0.28)'),
+    strokeWidth: 1.6,
+  }
+}
+
 function recomputeUnionNodes(
   nodes: FlowCanvasNode[],
   visibleEdges: GraphSchema['edges'],
@@ -184,11 +220,13 @@ function recomputeUnionNodes(
 export function TreeCanvas({
   graph,
   visibleIds,
+  deemphasizedIds,
   visibleEdges,
   selectedPersonId,
   selectedEdgeId,
   layoutMode,
   autoCenter,
+  flyToPersonRequest,
   onSelectPerson,
   onSelectEdge,
   onMovePerson,
@@ -259,6 +297,7 @@ export function TreeCanvas({
           data: {
             person,
             selected: person.id === selectedPersonId,
+            deemphasized: deemphasizedIds.has(person.id),
           },
         }))
 
@@ -273,6 +312,7 @@ export function TreeCanvas({
           rightPerson: unit.rightPerson,
           selectedPersonId,
           onSelectPerson,
+          deemphasizedIds,
           avgX: unit.avgX,
           avgY: unit.avgY,
           memberIds: unit.memberIds,
@@ -291,6 +331,7 @@ export function TreeCanvas({
       data: {
         person,
         selected: person.id === selectedPersonId,
+        deemphasized: deemphasizedIds.has(person.id),
       },
     }))
 
@@ -344,7 +385,7 @@ export function TreeCanvas({
             y: ((leftPerson.y + rightPerson.y) / 2) * Y_SCALE + 18,
           },
           data: {
-            label: `${leftPerson.preferredName} and ${rightPerson.preferredName}`,
+            label: `${displayName(leftPerson)} and ${displayName(rightPerson)}`,
           },
         },
       ]
@@ -361,6 +402,10 @@ export function TreeCanvas({
       for (const edge of visibleEdges) {
         if (edge.predicate === EdgePredicate.PARTNER_OF) continue
 
+        const sourceNodeId = familyByMemberId.get(edge.src)?.id ?? edge.src
+        const targetNodeId = familyByMemberId.get(edge.dst)?.id ?? edge.dst
+        if (sourceNodeId === targetNodeId) continue
+
         const family = familyByMemberId.get(edge.src)
         if (
           family &&
@@ -368,19 +413,19 @@ export function TreeCanvas({
             edge.predicate === EdgePredicate.GUARDIAN_OF ||
             edge.predicate === EdgePredicate.STEP_PARENT_OF)
         ) {
-          const mergedId = `family-child:${family.id}:${edge.dst}:${edge.predicate}`
+          const mergedId = `family-child:${sourceNodeId}:${targetNodeId}:${edge.predicate}`
           if (!mergedFamilyChildEdges.has(mergedId)) {
             mergedFamilyChildEdges.set(mergedId, {
               id: mergedId,
-              source: family.id,
-              target: edge.dst,
+              source: sourceNodeId,
+              target: targetNodeId,
               sourceHandle: 'bottom',
               targetHandle: 'top',
               type: 'simplebezier',
               label: selectedEdgeId === mergedId ? edge.predicate.replaceAll('_', ' ') : '',
               markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
               animated: false,
-              style: edgeStyle(edge.predicate),
+              style: familyConnectionStyle(edge.predicate),
               labelStyle: {
                 fontSize: 12,
                 fill: '#18333d',
@@ -398,21 +443,27 @@ export function TreeCanvas({
           continue
         }
 
-        if (familyByMemberId.has(edge.src) || familyByMemberId.has(edge.dst)) {
-          continue
-        }
-
         directEdges.push({
-          id: edge.id,
-          source: edge.src,
-          target: edge.dst,
+          id: `${edge.id}:${sourceNodeId}:${targetNodeId}`,
+          source: sourceNodeId,
+          target: targetNodeId,
           sourceHandle: 'bottom',
           targetHandle: 'top',
           type: 'simplebezier',
-          label: edge.id === selectedEdgeId ? edge.predicate.replaceAll('_', ' ') : '',
+          label:
+            edge.id === selectedEdgeId ||
+            `${edge.id}:${sourceNodeId}:${targetNodeId}` === selectedEdgeId
+              ? edge.predicate.replaceAll('_', ' ')
+              : '',
           markerEnd: { type: MarkerType.ArrowClosed, width: 20, height: 20 },
           animated: false,
-          style: edgeStyle(edge.predicate),
+          style:
+            sourceNodeId.startsWith('family:') && targetNodeId.startsWith('family:')
+              ? familyConnectionStyle(edge.predicate)
+              : deemphasizedIds.has(edge.src) ||
+                  deemphasizedIds.has(edge.dst)
+                ? deemphasizedEdgeStyle(edge.predicate)
+              : edgeStyle(edge.predicate),
           labelStyle: {
             fontSize: 12,
             fill: '#18333d',
@@ -424,7 +475,9 @@ export function TreeCanvas({
           },
           labelBgPadding: [6, 4],
           labelBgBorderRadius: 6,
-          selected: edge.id === selectedEdgeId,
+          selected:
+            edge.id === selectedEdgeId ||
+            `${edge.id}:${sourceNodeId}:${targetNodeId}` === selectedEdgeId,
         })
       }
 
@@ -558,7 +611,7 @@ export function TreeCanvas({
     )
 
     return [...unionConnectorEdges, ...directEdges, ...mergedChildEdges]
-  }, [familyByMemberId, layoutMode, people, selectedEdgeId, visibleEdges])
+  }, [deemphasizedIds, familyByMemberId, layoutMode, people, selectedEdgeId, visibleEdges])
 
   const [nodes, setNodes] = useNodesState(flowNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
@@ -586,6 +639,31 @@ export function TreeCanvas({
       })
     })
   }, [autoCenter, nodes])
+
+  useEffect(() => {
+    if (!flyToPersonRequest || !selectedPersonId) return
+    const instance = flowInstanceRef.current
+    if (!instance || nodes.length === 0) return
+
+    const targetNode =
+      nodes.find((node) => node.id === selectedPersonId) ??
+      nodes.find((node) => {
+        if (node.type !== 'family') return false
+        const data = node.data as FamilyNodeData
+        return data.memberIds.includes(selectedPersonId)
+      })
+
+    if (!targetNode) return
+
+    requestAnimationFrame(() => {
+      void instance.fitView({
+        duration: 280,
+        padding: 0.45,
+        nodes: [{ id: targetNode.id }],
+        maxZoom: 1.2,
+      })
+    })
+  }, [flyToPersonRequest, nodes, selectedPersonId])
 
   return (
     <div className="canvas">
