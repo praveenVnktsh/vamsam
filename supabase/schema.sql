@@ -93,3 +93,30 @@ on public.tree_members
 for insert
 to authenticated
 with check (user_id = auth.uid());
+
+insert into storage.buckets (id, name, public)
+values ('person-photos', 'person-photos', true)
+on conflict (id) do nothing;
+
+drop policy if exists "authenticated users can upload photos" on storage.objects;
+drop policy if exists "public can read photos" on storage.objects;
+drop policy if exists "authenticated users can update photos" on storage.objects;
+
+create policy "authenticated users can upload photos"
+on storage.objects
+for insert
+to authenticated
+with check (bucket_id = 'person-photos');
+
+create policy "public can read photos"
+on storage.objects
+for select
+to public
+using (bucket_id = 'person-photos');
+
+create policy "authenticated users can update photos"
+on storage.objects
+for update
+to authenticated
+using (bucket_id = 'person-photos')
+with check (bucket_id = 'person-photos');

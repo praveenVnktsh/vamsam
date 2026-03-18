@@ -35,13 +35,16 @@ import {
   visiblePersonIds,
 } from '../domain/graphOps'
 import { PersonTokenSelector } from '../features/PersonTokenSelector'
+import { PersonAvatar } from '../features/PersonAvatar'
 import { TreeCanvas } from '../features/canvas/TreeCanvas'
 import { Inspector } from '../features/inspector/Inspector'
+import { uploadCompressedPersonPhoto } from '../data/photoStorage'
 
 const depthOptions = [1, 2, 3, 99] as const
 
 type AppShellProps = {
   initialGraph: GraphSchema
+  treeId: string
   userEmail: string
   canEdit: boolean
   onPersistGraph: (graph: GraphSchema) => Promise<void>
@@ -51,6 +54,7 @@ type AppShellProps = {
 
 export function AppShell({
   initialGraph,
+  treeId,
   userEmail,
   canEdit,
   onPersistGraph,
@@ -651,7 +655,7 @@ export function AppShell({
                   onClick={() => handleSelectPerson(person.id)}
                 >
                   <span className="person-list-index">{index + 1}</span>
-                  <span className="person-list-avatar">{person.photo}</span>
+                  <PersonAvatar person={person} className="person-list-avatar" />
                   <span>
                     <strong>{displayName(person)}</strong>
                     <small>{person.years || person.currentResidence || person.birthPlace}</small>
@@ -1245,10 +1249,15 @@ export function AppShell({
                                 selectedPerson.id,
                                 targetId,
                                 predicate as EdgePredicate,
-                              ),
+                            ),
                       )
                     : undefined
                 }
+                onUploadPhoto={async (file) => {
+                  if (!canEdit || !selectedPersonId) return
+                  const photoUrl = await uploadCompressedPersonPhoto(treeId, selectedPersonId, file)
+                  setGraph((current) => updatePersonAttr(current, selectedPersonId, 'photo', photoUrl))
+                }}
                 onSoftDeletePerson={() => {
                   if (!canEdit) return
                   if (!selectedPersonId) return

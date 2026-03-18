@@ -222,6 +222,7 @@ function SupabaseApp() {
   return (
     <AppShell
       initialGraph={treeAccess.graph}
+      treeId={treeAccess.id}
       userEmail={session.user.email ?? 'Signed in'}
       canEdit={treeAccess.role !== 'viewer'}
       onPersistGraph={(graph) => savePrimaryTreeGraph(treeAccess.id, graph)}

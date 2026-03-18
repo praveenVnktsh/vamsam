@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
 import { displayName, personConnections, type PersonView } from '../../domain/graphOps'
 import { PersonAvatar } from '../PersonAvatar'
@@ -28,6 +28,7 @@ type InspectorProps = {
   onDeleteConnection: (edgeId: string) => void
   onAddConnectedPerson: (predicate: ConnectionComposerPredicate, preferredName: string) => void
   onConnectExistingPerson: (targetId: string, predicate: ConnectionComposerPredicate) => void
+  onUploadPhoto: (file: File) => Promise<void>
   onSoftDeletePerson: () => void
   onHardDeletePerson: () => void
 }
@@ -50,6 +51,7 @@ export function Inspector({
   onDeleteConnection,
   onAddConnectedPerson,
   onConnectExistingPerson,
+  onUploadPhoto,
   onSoftDeletePerson,
   onHardDeletePerson,
 }: InspectorProps) {
@@ -62,6 +64,9 @@ export function Inspector({
   >(null)
   const [linkError, setLinkError] = useState('')
   const [newProfileLink, setNewProfileLink] = useState('')
+  const [photoUploading, setPhotoUploading] = useState(false)
+  const [photoError, setPhotoError] = useState('')
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
   const datePattern = /^\d{4}(-\d{2}){0,2}$/
   const isDobValid =
     selectedPerson.dob.trim() === '' || datePattern.test(selectedPerson.dob.trim())
@@ -89,7 +94,26 @@ export function Inspector({
     resetLinkComposer()
     setLinkPredicate(EdgePredicate.PARTNER_OF)
     setNewProfileLink('')
+    setPhotoUploading(false)
+    setPhotoError('')
   }, [selectedPersonId])
+
+  async function handlePhotoPicked(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    setPhotoUploading(true)
+    setPhotoError('')
+
+    try {
+      await onUploadPhoto(file)
+    } catch (error) {
+      setPhotoError(error instanceof Error ? error.message : 'Unable to upload photo.')
+    } finally {
+      setPhotoUploading(false)
+    }
+  }
 
   function handleApplyLink() {
     const trimmed = linkQuery.trim()
@@ -190,6 +214,36 @@ export function Inspector({
             <p>{selectedPerson.branch}</p>
           </div>
         </div>
+
+        <section className="inspector-section">
+          <h3>Photo</h3>
+          <div className="photo-actions">
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              className="photo-actions__input"
+              onChange={(event) => void handlePhotoPicked(event)}
+            />
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => photoInputRef.current?.click()}
+              disabled={photoUploading}
+            >
+              {photoUploading ? 'Uploading...' : 'Upload photo'}
+            </button>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => onUpdateAttr('photo', '')}
+              disabled={photoUploading || !selectedPerson.photo.trim()}
+            >
+              Clear photo
+            </button>
+          </div>
+          {photoError && <small className="field-hint error">{photoError}</small>}
+        </section>
 
         <section className="inspector-section">
           <div className="form-grid">
