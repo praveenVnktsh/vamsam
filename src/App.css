@@ -232,6 +232,46 @@ select:focus-visible {
   grid-template-columns: 1fr;
 }
 
+.validation-banner {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #f1c9c6;
+  border-radius: 8px;
+  background: #fff6f5;
+  color: #8b2c28;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.snapshot-list {
+  display: grid;
+  gap: 8px;
+}
+
+.snapshot-list__empty {
+  margin: 0;
+  color: #80868b;
+  font-size: 0.8rem;
+}
+
+.snapshot-list-item {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  padding: 9px 10px;
+}
+
+.snapshot-list-item strong {
+  font-size: 0.84rem;
+  font-weight: 600;
+}
+
+.snapshot-list-item small {
+  color: #5f6368;
+  font-size: 0.76rem;
+}
+
 .section-title-row {
   display: flex;
   justify-content: space-between;

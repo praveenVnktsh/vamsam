@@ -4,12 +4,26 @@ import type { GraphSchema } from '../domain/graph'
 const DB_NAME = 'family-tree-db'
 const STORE_NAME = 'graphs'
 const GRAPH_KEY = 'workspace'
+const SNAPSHOT_STORE_NAME = 'snapshots'
+
+export type GraphSnapshot = {
+  id: string
+  treeId: string
+  createdAt: string
+  graph: GraphSchema
+}
 
 async function getDb() {
-  return openDB(DB_NAME, 1, {
+  return openDB(DB_NAME, 2, {
     upgrade(db) {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME)
+      }
+      if (!db.objectStoreNames.contains(SNAPSHOT_STORE_NAME)) {
+        const snapshotStore = db.createObjectStore(SNAPSHOT_STORE_NAME, {
+          keyPath: 'id',
+        })
+        snapshotStore.createIndex('treeId', 'treeId')
       }
     },
   })
@@ -29,4 +43,51 @@ export async function saveGraph(graph: GraphSchema): Promise<void> {
 export async function clearGraph(): Promise<void> {
   const db = await getDb()
   await db.delete(STORE_NAME, GRAPH_KEY)
+}
+
+export async function loadRecentSnapshots(
+  treeId: string,
+  limit = 10,
+): Promise<GraphSnapshot[]> {
+  const db = await getDb()
+  const snapshots = ((await db.getAllFromIndex(
+    SNAPSHOT_STORE_NAME,
+    'treeId',
+    treeId,
+  )) as GraphSnapshot[])
+    .sort(
+      (left, right) =>
+        new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+    )
+    .slice(0, limit)
+
+  return snapshots
+}
+
+export async function saveGraphSnapshot(
+  treeId: string,
+  graph: GraphSchema,
+  maxSnapshots = 10,
+): Promise<void> {
+  const db = await getDb()
+  const snapshot: GraphSnapshot = {
+    id: `${treeId}:${Date.now()}`,
+    treeId,
+    createdAt: new Date().toISOString(),
+    graph,
+  }
+
+  const tx = db.transaction(SNAPSHOT_STORE_NAME, 'readwrite')
+  await tx.store.put(snapshot)
+
+  const existing = ((await tx.store.index('treeId').getAll(treeId)) as GraphSnapshot[]).sort(
+    (left, right) =>
+      new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime(),
+  )
+
+  for (const stale of existing.slice(maxSnapshots)) {
+    await tx.store.delete(stale.id)
+  }
+
+  await tx.done
 }

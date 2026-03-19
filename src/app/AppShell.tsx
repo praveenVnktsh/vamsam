@@ -3,6 +3,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   encryptGraphBackup,
 } from '../data/backupCrypto'
+import {
+  loadRecentSnapshots,
+  saveGraphSnapshot,
+  type GraphSnapshot,
+} from '../data/storage'
 import { EdgePredicate, type GraphSchema } from '../domain/graph'
 import {
   addConnectedPerson,
@@ -31,6 +36,7 @@ import {
   updateEdge,
   updatePersonAttr,
   updatePersonPosition,
+  validateGraph,
   visibleEdges as getVisibleEdges,
   visiblePersonIds,
 } from '../domain/graphOps'
@@ -80,10 +86,14 @@ export function AppShell({
   const [compactLayout, setCompactLayout] = useState(true)
   const [layoutMode, setLayoutMode] = useState<'person' | 'family'>('family')
   const [layoutAlgorithm, setLayoutAlgorithm] = useState<'hierarchy' | 'organic'>('organic')
+  const [organicLiveSimulation, setOrganicLiveSimulation] = useState(true)
+  const [organicSeedNonce, setOrganicSeedNonce] = useState(0)
   const [viewControlsCollapsed, setViewControlsCollapsed] = useState(true)
   const [relationshipDialogCollapsed, setRelationshipDialogCollapsed] = useState(true)
   const [inspectorCollapsed, setInspectorCollapsed] = useState(false)
   const [saveState, setSaveState] = useState<SaveState>('saved')
+  const [validationMessage, setValidationMessage] = useState<string | null>(null)
+  const [recentSnapshots, setRecentSnapshots] = useState<GraphSnapshot[]>([])
   const [relationshipFromId, setRelationshipFromId] = useState<string>('')
   const [relationshipToId, setRelationshipToId] = useState<string>('')
   const [relationshipFromQuery, setRelationshipFromQuery] = useState('')
@@ -92,6 +102,12 @@ export function AppShell({
   const layoutRunRef = useRef(0)
   const saveRunRef = useRef(0)
   const hasInitializedSaveRef = useRef(false)
+  const graphHistoryRef = useRef<{ undo: GraphSchema[]; redo: GraphSchema[] }>({
+    undo: [],
+    redo: [],
+  })
+  const skipHistoryRef = useRef(false)
+  const previousGraphRef = useRef(initialGraph)
   const previousLayoutAlgorithmRef = useRef<'hierarchy' | 'organic'>('organic')
   const organicSeedKeyRef = useRef('')
   const depthIndex = depthOptions.indexOf(depth)
@@ -122,14 +138,91 @@ export function AppShell({
     setShowRelationshipGraph(false)
   }
 
+  function setGraphWithoutHistory(nextGraph: GraphSchema) {
+    skipHistoryRef.current = true
+    setGraph(nextGraph)
+  }
+
+  function applyValidatedGraphChange(
+    nextOrUpdater: GraphSchema | ((current: GraphSchema) => GraphSchema),
+  ) {
+    setGraph((current) => {
+      const nextGraph =
+        typeof nextOrUpdater === 'function'
+          ? (nextOrUpdater as (current: GraphSchema) => GraphSchema)(current)
+          : nextOrUpdater
+
+      const currentIssueKeys = new Set(
+        validateGraph(current).map(
+          (issue) => `${issue.code}:${issue.edgeId ?? ''}:${issue.entityId ?? ''}`,
+        ),
+      )
+      const newIssues = validateGraph(nextGraph).filter(
+        (issue) =>
+          !currentIssueKeys.has(`${issue.code}:${issue.edgeId ?? ''}:${issue.entityId ?? ''}`),
+      )
+      if (newIssues.length > 0) {
+        setValidationMessage(
+          newIssues[0]?.message ?? 'This change would create an invalid graph.',
+        )
+        return current
+      }
+
+      setValidationMessage(null)
+      return nextGraph
+    })
+  }
+
+  function handleUndo() {
+    const previous = graphHistoryRef.current.undo.pop()
+    if (!previous) return
+    graphHistoryRef.current.redo.push(graphRef.current)
+    setValidationMessage(null)
+    setGraphWithoutHistory(previous)
+  }
+
+  function handleRedo() {
+    const next = graphHistoryRef.current.redo.pop()
+    if (!next) return
+    graphHistoryRef.current.undo.push(graphRef.current)
+    setValidationMessage(null)
+    setGraphWithoutHistory(next)
+  }
+
   useEffect(() => {
     graphRef.current = graph
   }, [graph])
 
   useEffect(() => {
-    setGraph(initialGraph)
+    graphHistoryRef.current = { undo: [], redo: [] }
+    previousGraphRef.current = initialGraph
+    setValidationMessage(null)
+    setGraphWithoutHistory(initialGraph)
     setSaveState('saved')
   }, [initialGraph])
+
+  useEffect(() => {
+    void loadRecentSnapshots(treeId).then(setRecentSnapshots).catch(() => undefined)
+  }, [treeId])
+
+  useEffect(() => {
+    if (skipHistoryRef.current) {
+      skipHistoryRef.current = false
+      previousGraphRef.current = graph
+      return
+    }
+
+    if (previousGraphRef.current === graph) {
+      return
+    }
+
+    graphHistoryRef.current.undo.push(previousGraphRef.current)
+    if (graphHistoryRef.current.undo.length > 30) {
+      graphHistoryRef.current.undo.shift()
+    }
+    graphHistoryRef.current.redo = []
+    previousGraphRef.current = graph
+  }, [graph])
 
   useEffect(() => {
     if (!hasInitializedSaveRef.current) {
@@ -146,6 +239,9 @@ export function AppShell({
       void onPersistGraph(graph)
         .then(() => {
           if (saveRunRef.current === runId) {
+            void saveGraphSnapshot(treeId, graph).then(() =>
+              loadRecentSnapshots(treeId).then(setRecentSnapshots),
+            )
             setSaveState('saved')
           }
         })
@@ -367,7 +463,8 @@ export function AppShell({
 
       if (layoutRunRef.current === runId) {
         organicSeedKeyRef.current = organicSeedKey
-        setGraph(seededGraph)
+        setOrganicSeedNonce((value) => value + 1)
+        applyValidatedGraphChange(seededGraph)
       }
     })()
   }, [compactLayout, layoutAlgorithm, layoutMode, visibleIds])
@@ -397,7 +494,7 @@ export function AppShell({
       })
 
       if (layoutRunRef.current === runId) {
-        setGraph(nextGraph)
+        applyValidatedGraphChange(nextGraph)
       }
     })()
   }, [
@@ -449,7 +546,7 @@ export function AppShell({
     if (!canEdit) return
     if (!selectedPerson) return
     const result = addRelative(graph, selectedPerson, type)
-    setGraph(result.graph)
+    applyValidatedGraphChange(result.graph)
     setSelectedPersonId(result.newPersonId)
     expandInspectorPanel()
     setRightCollapsed(false)
@@ -467,7 +564,7 @@ export function AppShell({
       if (!window.confirm(`Hard delete ${displayName(person)} and remove all related edges?`)) {
         return
       }
-      setGraph((current) => hardDeletePerson(current, personId))
+      applyValidatedGraphChange((current) => hardDeletePerson(current, personId))
       if (selectedPersonId === personId) {
         setSelectedPersonId(null)
         setSelectedEdgeId(null)
@@ -477,7 +574,7 @@ export function AppShell({
     }
 
     const result = addRelative(graph, person, action)
-    setGraph(result.graph)
+    applyValidatedGraphChange(result.graph)
     setSelectedPersonId(result.newPersonId)
     setRightCollapsed(false)
   }
@@ -485,7 +582,7 @@ export function AppShell({
   function handleCreateStandalonePerson(defaultName = 'New Person') {
     if (!canEdit) return
     const result = addStandalonePerson(graph, defaultName)
-    setGraph(result.graph)
+    applyValidatedGraphChange(result.graph)
     setSelectedPersonId(result.newPersonId)
     setRightCollapsed(false)
   }
@@ -501,7 +598,7 @@ export function AppShell({
         layoutAlgorithm,
       })
       if (layoutRunRef.current === runId) {
-        setGraph(nextGraph)
+        applyValidatedGraphChange(nextGraph)
       }
     })()
   }
@@ -571,6 +668,8 @@ export function AppShell({
         : saveState === 'error'
           ? 'Save failed'
           : 'Unsaved'
+  const canUndo = graphHistoryRef.current.undo.length > 0
+  const canRedo = graphHistoryRef.current.redo.length > 0
 
   return (
     <div className="app">
@@ -614,6 +713,18 @@ export function AppShell({
 
           <div className="left-sidebar__section">
             <div className="storage-actions">
+              <button type="button" className="secondary-button" onClick={handleUndo} disabled={!canEdit || !canUndo}>
+                Undo
+              </button>
+              <button type="button" className="secondary-button" onClick={handleRedo} disabled={!canEdit || !canRedo}>
+                Redo
+              </button>
+            </div>
+            {validationMessage ? <p className="validation-banner">{validationMessage}</p> : null}
+          </div>
+
+          <div className="left-sidebar__section">
+            <div className="storage-actions">
               <button type="button" className="secondary-button" onClick={handleExport}>
                 Export JSON
               </button>
@@ -631,6 +742,38 @@ export function AppShell({
               >
                 Sign out
               </button>
+            </div>
+          </div>
+
+          <div className="left-sidebar__section">
+            <div className="section-title-row">
+              <span className="mini-label">Recent saves</span>
+              <span className="counts-pill">{recentSnapshots.length}</span>
+            </div>
+            <div className="snapshot-list">
+              {recentSnapshots.length === 0 ? (
+                <p className="snapshot-list__empty">No recent snapshots yet.</p>
+              ) : (
+                recentSnapshots.map((snapshot) => (
+                  <button
+                    key={snapshot.id}
+                    type="button"
+                    className="snapshot-list-item"
+                    onClick={() => {
+                      if (!window.confirm('Restore this saved version? Your current unsaved changes will be replaced.')) {
+                        return
+                      }
+                      graphHistoryRef.current.redo = []
+                      graphHistoryRef.current.undo.push(graphRef.current)
+                      setValidationMessage(null)
+                      setGraphWithoutHistory(snapshot.graph)
+                    }}
+                  >
+                    <strong>{new Date(snapshot.createdAt).toLocaleString()}</strong>
+                    <small>Restore snapshot</small>
+                  </button>
+                ))
+              )}
             </div>
           </div>
 
@@ -689,6 +832,8 @@ export function AppShell({
           selectedEdgeId={selectedEdgeId}
           layoutMode={layoutMode}
           layoutAlgorithm={layoutAlgorithm}
+          organicSeedNonce={organicSeedNonce}
+          organicLiveSimulation={organicLiveSimulation}
           autoCenter={false}
           flyToPersonRequest={flyToPersonRequest}
             onSelectPerson={(id) => handleSelectPerson(id)}
@@ -699,11 +844,11 @@ export function AppShell({
               }
             }}
             onMovePerson={(id, x, y) =>
-              canEdit ? setGraph((current) => updatePersonPosition(current, id, x, y)) : undefined
+              canEdit ? applyValidatedGraphChange((current) => updatePersonPosition(current, id, x, y)) : undefined
             }
             onMoveFamily={(memberIds, dx, dy) =>
               canEdit
-                ? setGraph((current) =>
+                ? applyValidatedGraphChange((current) =>
                     memberIds.reduce(
                       (nextGraph, memberId) => {
                         const person = graphPeople(nextGraph).find((candidate) => candidate.id === memberId)
@@ -936,6 +1081,16 @@ export function AppShell({
                     />
                     Organic layout
                   </label>
+                  {layoutAlgorithm === 'organic' ? (
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={organicLiveSimulation}
+                        onChange={(event) => setOrganicLiveSimulation(event.target.checked)}
+                      />
+                      Live simulation
+                    </label>
+                  ) : null}
                   <label>
                     <input
                       type="checkbox"
@@ -1201,14 +1356,14 @@ export function AppShell({
                 onQuickAddRelative={(type) => handleAddRelative(type)}
                 onUpdateAttr={(key, value) =>
                   canEdit
-                    ? setGraph((current) =>
+                    ? applyValidatedGraphChange((current) =>
                         updatePersonAttr(current, selectedPersonId ?? '', key, value),
                       )
                     : undefined
                 }
                 onUpdateConnection={(edgeId, predicate) =>
                   canEdit
-                    ? setGraph((current) =>
+                    ? applyValidatedGraphChange((current) =>
                         updateEdge(current, edgeId, {
                           predicate: predicate as GraphSchema['edges'][number]['predicate'],
                         }),
@@ -1216,10 +1371,10 @@ export function AppShell({
                     : undefined
                 }
                 onReverseConnection={(edgeId) =>
-                  canEdit ? setGraph((current) => reverseEdge(current, edgeId)) : undefined
+                  canEdit ? applyValidatedGraphChange((current) => reverseEdge(current, edgeId)) : undefined
                 }
                 onDeleteConnection={(edgeId) =>
-                  canEdit ? setGraph((current) => deleteEdge(current, edgeId)) : undefined
+                  canEdit ? applyValidatedGraphChange((current) => deleteEdge(current, edgeId)) : undefined
                 }
                 onAddConnectedPerson={(predicate, preferredName) => {
                   if (!canEdit) return
@@ -1229,12 +1384,12 @@ export function AppShell({
                       : predicate === 'child'
                         ? addParentPerson(graph, selectedPerson, preferredName)
                         : addConnectedPerson(graph, selectedPerson, predicate, preferredName)
-                  setGraph(result.graph)
+                  applyValidatedGraphChange(result.graph)
                   setSelectedPersonId(result.newPersonId)
                 }}
                 onConnectExistingPerson={(targetId, predicate) =>
                   canEdit
-                    ? setGraph((current) =>
+                    ? applyValidatedGraphChange((current) =>
                         predicate === 'sibling'
                           ? connectPeopleAsSiblings(current, selectedPerson.id, targetId)
                           : predicate === 'child'
@@ -1256,7 +1411,7 @@ export function AppShell({
                 onUploadPhoto={async (file) => {
                   if (!canEdit || !selectedPersonId) return
                   const photoUrl = await uploadCompressedPersonPhoto(treeId, selectedPersonId, file)
-                  setGraph((current) => updatePersonAttr(current, selectedPersonId, 'photo', photoUrl))
+                  applyValidatedGraphChange((current) => updatePersonAttr(current, selectedPersonId, 'photo', photoUrl))
                 }}
                 onSoftDeletePerson={() => {
                   if (!canEdit) return
@@ -1264,7 +1419,7 @@ export function AppShell({
                   if (!window.confirm('Soft delete this person and remove their personal information?')) {
                     return
                   }
-                  setGraph((current) => softDeletePerson(current, selectedPersonId))
+                  applyValidatedGraphChange((current) => softDeletePerson(current, selectedPersonId))
                 }}
                 onHardDeletePerson={() => {
                   if (!canEdit) return
@@ -1272,7 +1427,7 @@ export function AppShell({
                   if (!window.confirm('Hard delete this node and remove all related edges?')) {
                     return
                   }
-                  setGraph((current) => hardDeletePerson(current, selectedPersonId))
+                  applyValidatedGraphChange((current) => hardDeletePerson(current, selectedPersonId))
                   setSelectedPersonId(null)
                   setSelectedEdgeId(null)
                   setRightCollapsed(true)

@@ -517,6 +517,106 @@ export function reverseEdge(graph: GraphSchema, edgeId: string): GraphSchema {
   })
 }
 
+export type GraphValidationIssue = {
+  code:
+    | 'missing_entity'
+    | 'self_edge'
+    | 'duplicate_edge'
+    | 'parent_cycle'
+  message: string
+  edgeId?: string
+  entityId?: string
+}
+
+export function validateGraph(graph: GraphSchema): GraphValidationIssue[] {
+  const issues: GraphValidationIssue[] = []
+  const entityIds = new Set(graph.entities.map((entity) => entity.id))
+  const seenEdges = new Map<string, string>()
+  const parentAdjacency = new Map<string, string[]>()
+  const parentLikePredicates = new Set<EdgePredicate>([
+    EdgePredicate.PARENT_OF,
+    EdgePredicate.GUARDIAN_OF,
+    EdgePredicate.STEP_PARENT_OF,
+  ])
+
+  for (const edge of graph.edges) {
+    if (!entityIds.has(edge.src)) {
+      issues.push({
+        code: 'missing_entity',
+        message: 'A relationship points to a missing source person.',
+        edgeId: edge.id,
+        entityId: edge.src,
+      })
+    }
+    if (!entityIds.has(edge.dst)) {
+      issues.push({
+        code: 'missing_entity',
+        message: 'A relationship points to a missing target person.',
+        edgeId: edge.id,
+        entityId: edge.dst,
+      })
+    }
+    if (edge.src === edge.dst) {
+      issues.push({
+        code: 'self_edge',
+        message: 'A person cannot be linked to themselves.',
+        edgeId: edge.id,
+      })
+    }
+
+    const key =
+      edge.predicate === EdgePredicate.PARTNER_OF
+        ? `${edge.predicate}:${[edge.src, edge.dst].sort().join('|')}`
+        : `${edge.predicate}:${edge.src}->${edge.dst}`
+    const existing = seenEdges.get(key)
+    if (existing) {
+      issues.push({
+        code: 'duplicate_edge',
+        message: 'Duplicate relationships are not allowed.',
+        edgeId: edge.id,
+      })
+    } else {
+      seenEdges.set(key, edge.id)
+    }
+
+    if (parentLikePredicates.has(edge.predicate)) {
+      parentAdjacency.set(edge.src, [...(parentAdjacency.get(edge.src) ?? []), edge.dst])
+    }
+  }
+
+  const visitState = new Map<string, 'visiting' | 'visited'>()
+  const stack = new Set<string>()
+
+  function walk(nodeId: string): boolean {
+    const state = visitState.get(nodeId)
+    if (state === 'visiting') return true
+    if (state === 'visited') return false
+
+    visitState.set(nodeId, 'visiting')
+    stack.add(nodeId)
+    for (const childId of parentAdjacency.get(nodeId) ?? []) {
+      if (walk(childId)) {
+        return true
+      }
+    }
+    stack.delete(nodeId)
+    visitState.set(nodeId, 'visited')
+    return false
+  }
+
+  for (const entityId of entityIds) {
+    if (!walk(entityId)) continue
+    issues.push({
+      code: 'parent_cycle',
+      message: 'Parent relationships cannot form a cycle.',
+      entityId,
+    })
+    break
+  }
+
+  return issues
+}
+
 export function addConnection(
   graph: GraphSchema,
   src: string,
@@ -1166,6 +1266,7 @@ function organicLayoutPositions(
   const childrenByParent = new Map<string, string[]>()
   const incomingParentCount = new Map<string, number>(nodeIds.map((nodeId) => [nodeId, 0]))
   const undirectedAdjacency = new Map<string, string[]>(nodeIds.map((nodeId) => [nodeId, []]))
+  const degreeByNode = new Map<string, number>(nodeIds.map((nodeId) => [nodeId, 0]))
 
   for (const edge of layoutEdges) {
     const sourceId = edge.sources[0]
@@ -1174,6 +1275,8 @@ function organicLayoutPositions(
 
     undirectedAdjacency.set(sourceId, [...(undirectedAdjacency.get(sourceId) ?? []), targetId])
     undirectedAdjacency.set(targetId, [...(undirectedAdjacency.get(targetId) ?? []), sourceId])
+    degreeByNode.set(sourceId, (degreeByNode.get(sourceId) ?? 0) + 1)
+    degreeByNode.set(targetId, (degreeByNode.get(targetId) ?? 0) + 1)
 
     if (!parentLikePredicates.has(edge.predicate)) continue
 
@@ -1181,10 +1284,22 @@ function organicLayoutPositions(
     incomingParentCount.set(targetId, (incomingParentCount.get(targetId) ?? 0) + 1)
   }
 
-  let roots = nodeIds.filter((nodeId) => (incomingParentCount.get(nodeId) ?? 0) === 0)
-  if (roots.length === 0 && nodeIds.length > 0) {
-    const minIncoming = Math.min(...incomingParentCount.values())
-    roots = nodeIds.filter((nodeId) => (incomingParentCount.get(nodeId) ?? 0) === minIncoming)
+  let roots: string[] = []
+  if (nodeIds.length > 0) {
+    const sortedByDegree = [...nodeIds].sort((left, right) => {
+      const degreeDelta = (degreeByNode.get(right) ?? 0) - (degreeByNode.get(left) ?? 0)
+      if (degreeDelta !== 0) return degreeDelta
+      const incomingDelta =
+        (incomingParentCount.get(left) ?? 0) - (incomingParentCount.get(right) ?? 0)
+      if (incomingDelta !== 0) return incomingDelta
+      return left.localeCompare(right)
+    })
+    const maxRoots = Math.max(1, Math.min(4, Math.ceil(Math.sqrt(nodeIds.length) / 2)))
+    const maxDegree = degreeByNode.get(sortedByDegree[0]) ?? 0
+    roots = sortedByDegree.filter((nodeId, index) => {
+      if (index >= maxRoots) return false
+      return index === 0 || (degreeByNode.get(nodeId) ?? 0) >= Math.max(1, maxDegree - 1)
+    })
   }
 
   const depthByNode = new Map<string, number>()
@@ -1250,16 +1365,45 @@ function organicLayoutPositions(
 
   const sortedLevels = Array.from(levels.entries()).sort((left, right) => left[0] - right[0])
   const radiusStep = compact ? 18 : 22
-  const rootRadius = compact ? 6 : 8
+  const rootRadius = compact ? 5 : 7
+  const multiRootShellRadius =
+    roots.length <= 1
+      ? 0
+      : compact
+        ? 18 + (roots.length - 1) * 5.5
+        : 24 + (roots.length - 1) * 7
+  const spiralTurnStep = compact ? Math.PI * 0.6 : Math.PI * 0.56
+  const perNodeSpiralStep = compact ? 3.4 : 4.2
 
   for (const [depth, levelNodeIds] of sortedLevels) {
     const ordered = [...levelNodeIds].sort()
-    const radius = depth === 0 ? rootRadius : rootRadius + depth * radiusStep
-    const angleOffset = depth * 0.45
+    if (depth === 0) {
+      const angleOffset = 0.18
+      ordered.forEach((nodeId, index) => {
+        const angle =
+          ordered.length === 1 ? angleOffset : angleOffset + (Math.PI * 2 * index) / ordered.length
+        const localRadius =
+          ordered.length === 1
+            ? 0
+            : Math.max(
+                rootRadius + Math.min(ordered.length, 6) * 0.35,
+                multiRootShellRadius,
+              )
+
+        positions.set(nodeId, {
+          x: 24 + Math.cos(angle) * localRadius,
+          y: 24 + Math.sin(angle) * localRadius,
+        })
+      })
+      continue
+    }
+
+    const shellBaseRadius = rootRadius + depth * radiusStep
+    const shellAngleOffset = depth * spiralTurnStep
 
     ordered.forEach((nodeId, index) => {
-      const angle =
-        ordered.length === 1 ? angleOffset : angleOffset + (Math.PI * 2 * index) / ordered.length
+      const angle = shellAngleOffset + index * spiralTurnStep
+      const radius = shellBaseRadius + index * perNodeSpiralStep
 
       positions.set(nodeId, {
         x: 24 + Math.cos(angle) * radius,

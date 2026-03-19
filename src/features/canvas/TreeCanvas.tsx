@@ -40,6 +40,8 @@ type TreeCanvasProps = {
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
   layoutAlgorithm: 'hierarchy' | 'organic'
+  organicSeedNonce: number
+  organicLiveSimulation: boolean
   autoCenter: boolean
   flyToPersonRequest: { nonce: number; personId: string } | null
   onSelectPerson: (id: string) => void
@@ -321,6 +323,8 @@ export function TreeCanvas({
   selectedEdgeId,
   layoutMode,
   layoutAlgorithm,
+  organicSeedNonce,
+  organicLiveSimulation,
   autoCenter,
   flyToPersonRequest,
   onSelectPerson,
@@ -820,11 +824,123 @@ export function TreeCanvas({
     return [...unionConnectorEdges, ...directEdges, ...mergedChildEdges]
   }, [deemphasizedIds, familyByMemberId, highlightedEdgeIds, layoutMode, people, selectedEdgeId, visibleEdges])
 
+  const organicPhysicsEdges = useMemo(() => {
+    if (layoutMode === 'family') {
+      return visibleEdges.flatMap((edge) => {
+        if (edge.predicate === EdgePredicate.PARTNER_OF) return []
+
+        const sourceNodeId = familyByMemberId.get(edge.src)?.id ?? edge.src
+        const targetNodeId = familyByMemberId.get(edge.dst)?.id ?? edge.dst
+        if (sourceNodeId === targetNodeId) return []
+
+        return [
+          {
+            id: `${edge.id}:${sourceNodeId}:${targetNodeId}`,
+            source: sourceNodeId,
+            target: targetNodeId,
+            predicate: edge.predicate,
+          },
+        ]
+      })
+    }
+
+    const peopleById = personMap(people)
+    const partnerEdges = visibleEdges.filter(
+      (edge) =>
+        edge.predicate === EdgePredicate.PARTNER_OF &&
+        peopleById.has(edge.src) &&
+        peopleById.has(edge.dst),
+    )
+
+    const childToUnion = new Map<
+      string,
+      { unionId: string; predicate: EdgePredicate; edgeIds: string[] }
+    >()
+
+    for (const edge of partnerEdges) {
+      const leftPerson = peopleById.get(edge.src)
+      const rightPerson = peopleById.get(edge.dst)
+      if (!leftPerson || !rightPerson) continue
+
+      const sharedChildEdges = visibleEdges.filter((candidate) => {
+        if (
+          candidate.predicate !== EdgePredicate.PARENT_OF &&
+          candidate.predicate !== EdgePredicate.GUARDIAN_OF &&
+          candidate.predicate !== EdgePredicate.STEP_PARENT_OF
+        ) {
+          return false
+        }
+
+        return (
+          candidate.src === leftPerson.id &&
+          visibleEdges.some(
+            (other) =>
+              other.id !== candidate.id &&
+              other.dst === candidate.dst &&
+              other.src === rightPerson.id &&
+              (other.predicate === EdgePredicate.PARENT_OF ||
+                other.predicate === EdgePredicate.GUARDIAN_OF ||
+                other.predicate === EdgePredicate.STEP_PARENT_OF),
+          )
+        )
+      })
+
+      if (sharedChildEdges.length === 0) continue
+
+      const unionId = `union:${edge.id}`
+      for (const childEdge of sharedChildEdges) {
+        if (!childToUnion.has(childEdge.dst)) {
+          childToUnion.set(childEdge.dst, {
+            unionId,
+            predicate: childEdge.predicate,
+            edgeIds: [childEdge.id],
+          })
+        }
+      }
+    }
+
+    const directEdges = visibleEdges.flatMap((edge) => {
+      if (!peopleById.has(edge.src) || !peopleById.has(edge.dst)) return []
+      if (edge.predicate === EdgePredicate.PARTNER_OF) return []
+      if (childToUnion.has(edge.dst) && childToUnion.get(edge.dst)?.predicate === edge.predicate) {
+        return []
+      }
+
+      return [
+        {
+          id: edge.id,
+          source: edge.src,
+          target: edge.dst,
+          predicate: edge.predicate,
+        },
+      ]
+    })
+
+    const partnerPhysicsEdges = partnerEdges.map((edge) => ({
+      id: edge.id,
+      source: edge.src,
+      target: edge.dst,
+      predicate: edge.predicate,
+    }))
+
+    const mergedChildPhysicsEdges = Array.from(childToUnion.entries()).map(([childId, union]) => ({
+      id: `merged:${union.unionId}:${childId}`,
+      source: union.unionId,
+      target: childId,
+      predicate: union.predicate,
+    }))
+
+    return [...partnerPhysicsEdges, ...directEdges, ...mergedChildPhysicsEdges]
+  }, [familyByMemberId, layoutMode, people, visibleEdges])
+
   const [nodes, setNodes] = useNodesState(flowNodes)
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null)
   const handledFlyNonceRef = useRef<number | null>(null)
   const organicVelocityRef = useRef(new Map<string, { x: number; y: number }>())
+  const organicStableFramesRef = useRef(0)
+  const organicAnchorRef = useRef<{ x: number; y: number } | null>(null)
+  const handledOrganicSeedNonceRef = useRef<number>(organicSeedNonce)
 
   useEffect(() => {
     if (layoutAlgorithm !== 'organic') {
@@ -832,11 +948,14 @@ export function TreeCanvas({
       return
     }
 
+    const shouldApplySeed = handledOrganicSeedNonceRef.current !== organicSeedNonce
+    handledOrganicSeedNonceRef.current = organicSeedNonce
+
     setNodes((current) => {
       const currentById = new Map(current.map((node) => [node.id, node]))
       return flowNodes.map((node) => {
         const existing = currentById.get(node.id)
-        if (!existing || node.type === 'union') {
+        if (!existing || node.type === 'union' || shouldApplySeed) {
           return node
         }
 
@@ -846,21 +965,33 @@ export function TreeCanvas({
         }
       })
     })
-  }, [flowNodes, layoutAlgorithm, setNodes])
+  }, [flowNodes, layoutAlgorithm, organicSeedNonce, setNodes])
+
+  useEffect(() => {
+    if (layoutAlgorithm !== 'organic') return
+    organicVelocityRef.current.clear()
+    organicStableFramesRef.current = 0
+    organicAnchorRef.current = null
+  }, [layoutAlgorithm, organicSeedNonce])
 
   useEffect(() => {
     setEdges(flowEdges)
   }, [flowEdges, setEdges])
 
   useEffect(() => {
-    if (layoutAlgorithm !== 'organic') {
+    if (layoutAlgorithm !== 'organic' || !organicLiveSimulation) {
       organicVelocityRef.current.clear()
+      organicStableFramesRef.current = 0
+      organicAnchorRef.current = null
       return
     }
+
+    organicStableFramesRef.current = 0
 
     let frameId = 0
 
     const tick = () => {
+      let shouldContinue = true
       setNodes((current) => {
         const positionById = new Map(
           current
@@ -872,17 +1003,28 @@ export function TreeCanvas({
           return current
         }
 
+        if (!organicAnchorRef.current) {
+          organicAnchorRef.current = {
+            x:
+              nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.x ?? 0), 0) /
+              nodeIds.length,
+            y:
+              nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.y ?? 0), 0) /
+              nodeIds.length,
+          }
+        }
+
         const substeps = 3
         const repelStrength = layoutMode === 'family' ? 32000 : 24000
         const springStrength = 0.0064
         const gravityStrength = 0.0018
         const radialStrength = layoutMode === 'family' ? 0.026 : 0.022
-        const damping = 0.74
-        const accelerationScale = 0.18
-        const maxVelocity = 6
+        const damping = 0.82
+        const accelerationScale = 0.16
+        const maxVelocity = 4.6
         const degreeByNode = new Map<string, number>(nodeIds.map((nodeId) => [nodeId, 0]))
 
-        for (const edge of flowEdges) {
+        for (const edge of organicPhysicsEdges) {
           if (degreeByNode.has(edge.source)) {
             degreeByNode.set(edge.source, (degreeByNode.get(edge.source) ?? 0) + 1)
           }
@@ -931,7 +1073,7 @@ export function TreeCanvas({
             }
           }
 
-          for (const edge of flowEdges) {
+          for (const edge of organicPhysicsEdges) {
             const sourcePosition = positionById.get(edge.source)
             const targetPosition = positionById.get(edge.target)
             if (!sourcePosition || !targetPosition) continue
@@ -945,11 +1087,23 @@ export function TreeCanvas({
               distance = Math.sqrt(2)
             }
 
-            const isPartner =
-              edge.id.includes(EdgePredicate.PARTNER_OF) || edge.id.startsWith('union:')
-            const desiredDistance = isPartner ? 150 : layoutMode === 'family' ? 190 : 170
+            const isParentLike =
+              edge.predicate === EdgePredicate.PARENT_OF ||
+              edge.predicate === EdgePredicate.GUARDIAN_OF ||
+              edge.predicate === EdgePredicate.STEP_PARENT_OF
+            const isPartner = edge.predicate === EdgePredicate.PARTNER_OF
+            const desiredDistance = isParentLike
+              ? layoutMode === 'family'
+                ? 150
+                : 138
+              : isPartner
+                ? 170
+                : layoutMode === 'family'
+                  ? 260
+                  : 240
+            const forceScale = isParentLike ? 1.7 : isPartner ? 0.7 : 0.12
             const delta = distance - desiredDistance
-            const force = delta * springStrength
+            const force = delta * springStrength * forceScale
             const fx = (dx / distance) * force
             const fy = (dy / distance) * force
             const sourceForce = forces.get(edge.source)
@@ -1009,6 +1163,28 @@ export function TreeCanvas({
             position.y += velocity.y
           }
 
+          let avgVelocityX = 0
+          let avgVelocityY = 0
+          for (const nodeId of nodeIds) {
+            const velocity = organicVelocityRef.current.get(nodeId)
+            if (!velocity) continue
+            avgVelocityX += velocity.x
+            avgVelocityY += velocity.y
+          }
+          avgVelocityX /= nodeIds.length
+          avgVelocityY /= nodeIds.length
+
+          for (const nodeId of nodeIds) {
+            const velocity = organicVelocityRef.current.get(nodeId)
+            const position = positionById.get(nodeId)
+            if (!velocity || !position) continue
+
+            velocity.x -= avgVelocityX
+            velocity.y -= avgVelocityY
+            position.x -= avgVelocityX
+            position.y -= avgVelocityY
+          }
+
           for (let index = 0; index < nodeIds.length; index += 1) {
             const sourceId = nodeIds[index]
             const sourcePosition = positionById.get(sourceId)
@@ -1061,6 +1237,51 @@ export function TreeCanvas({
           }
         }
 
+        const anchor = organicAnchorRef.current
+        if (anchor) {
+          const currentCentroidX =
+            nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.x ?? 0), 0) /
+            nodeIds.length
+          const currentCentroidY =
+            nodeIds.reduce((sum, nodeId) => sum + (positionById.get(nodeId)?.y ?? 0), 0) /
+            nodeIds.length
+          const shiftX = currentCentroidX - anchor.x
+          const shiftY = currentCentroidY - anchor.y
+
+          if (Math.abs(shiftX) > 0.001 || Math.abs(shiftY) > 0.001) {
+            for (const nodeId of nodeIds) {
+              const position = positionById.get(nodeId)
+              if (!position) continue
+              position.x -= shiftX
+              position.y -= shiftY
+            }
+          }
+        }
+
+        let maxObservedVelocity = 0
+        for (const nodeId of nodeIds) {
+          const velocity = organicVelocityRef.current.get(nodeId)
+          if (!velocity) continue
+          maxObservedVelocity = Math.max(
+            maxObservedVelocity,
+            Math.abs(velocity.x),
+            Math.abs(velocity.y),
+          )
+        }
+
+        if (maxObservedVelocity < 0.1) {
+          organicStableFramesRef.current += 1
+        } else {
+          organicStableFramesRef.current = 0
+        }
+
+        shouldContinue = organicStableFramesRef.current < 10
+        if (!shouldContinue) {
+          for (const nodeId of nodeIds) {
+            organicVelocityRef.current.set(nodeId, { x: 0, y: 0 })
+          }
+        }
+
         const next = current.map((node) => {
           if (node.type === 'union') return node
 
@@ -1079,7 +1300,9 @@ export function TreeCanvas({
         return layoutMode === 'family' ? next : recomputeUnionNodes(next, visibleEdges)
       })
 
-      frameId = window.requestAnimationFrame(tick)
+      if (shouldContinue) {
+        frameId = window.requestAnimationFrame(tick)
+      }
     }
 
     frameId = window.requestAnimationFrame(tick)
@@ -1087,7 +1310,7 @@ export function TreeCanvas({
     return () => {
       window.cancelAnimationFrame(frameId)
     }
-  }, [flowEdges, layoutAlgorithm, layoutMode, setNodes, visibleEdges])
+  }, [layoutAlgorithm, layoutMode, organicLiveSimulation, organicPhysicsEdges, setNodes, visibleEdges])
 
   useEffect(() => {
     if (!autoCenter) return
