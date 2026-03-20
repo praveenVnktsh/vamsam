@@ -25,32 +25,38 @@ export function PersonAvatar({ person, className }: PersonAvatarProps) {
   const [imageFailed, setImageFailed] = useState(false)
 
   useEffect(() => {
-    setImageFailed(false)
-    if (!photoValue) {
-      setPhotoSource('')
-      return
-    }
+    let cancelled = false
 
-    if (isStoredPhotoRef(photoValue)) {
-      let cancelled = false
-      void resolvePhotoUrl(photoValue)
-        .then((url) => {
-          if (!cancelled) {
-            setPhotoSource(url)
-          }
-        })
-        .catch(() => {
-          if (!cancelled) {
-            setPhotoSource('')
-          }
-        })
+    queueMicrotask(() => {
+      if (cancelled) return
+      setImageFailed(false)
 
-      return () => {
-        cancelled = true
+      if (!photoValue) {
+        setPhotoSource('')
+        return
       }
-    }
 
-    setPhotoSource(isImageSource(photoValue) ? photoValue : '')
+      if (isStoredPhotoRef(photoValue)) {
+        void resolvePhotoUrl(photoValue)
+          .then((url) => {
+            if (!cancelled) {
+              setPhotoSource(url)
+            }
+          })
+          .catch(() => {
+            if (!cancelled) {
+              setPhotoSource('')
+            }
+          })
+        return
+      }
+
+      setPhotoSource(isImageSource(photoValue) ? photoValue : '')
+    })
+
+    return () => {
+      cancelled = true
+    }
   }, [photoValue])
 
   if (photoSource && !imageFailed) {

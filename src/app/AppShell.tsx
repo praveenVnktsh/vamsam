@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   encryptGraphBackup,
 } from '../data/backupCrypto'
@@ -11,6 +11,7 @@ import {
   reviewChangeRequest,
   submitChangeRequest,
   type ChangeRequest,
+  type InvitePreview,
   type InviteRole,
 } from '../data/cloudGraph'
 import {
@@ -67,6 +68,7 @@ type AppShellProps = {
   currentUserId: string
   currentUserProfilePhoto: string
   linkedPersonId: string | null
+  invitePreview?: InvitePreview | null
   role: 'admin' | 'editor' | 'viewer'
   canEdit: boolean
   onPersistGraph: (graph: GraphSchema) => Promise<void>
@@ -81,6 +83,7 @@ export function AppShell({
   currentUserId,
   currentUserProfilePhoto,
   linkedPersonId,
+  invitePreview = null,
   role,
   canEdit,
   onPersistGraph,
@@ -126,6 +129,7 @@ export function AppShell({
   const [inviteLink, setInviteLink] = useState('')
   const [inviteLoading, setInviteLoading] = useState(false)
   const [inviteError, setInviteError] = useState<string | null>(null)
+  const [identityStep, setIdentityStep] = useState<'welcome' | 'claim' | 'create'>('welcome')
   const [identityMode, setIdentityMode] = useState<'claim' | 'create'>('claim')
   const [identityQuery, setIdentityQuery] = useState('')
   const [identitySelectedId, setIdentitySelectedId] = useState('')
@@ -200,7 +204,14 @@ export function AppShell({
     setRelationshipToQuery('')
     setShowRelationshipGraph(false)
     setRelationshipDialogCollapsed(true)
+    if (isMobileViewport) {
+      setMobilePanel('none')
+    }
   }
+
+  const relationshipModeActive = isMobileViewport
+    ? mobilePanel === 'relationship'
+    : !relationshipDialogCollapsed
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -224,17 +235,31 @@ export function AppShell({
       setMobilePanel('inspector')
       return
     }
-    if (!relationshipDialogCollapsed || relationshipFromId || relationshipToId || showRelationshipGraph) {
+    if (relationshipModeActive) {
       setMobilePanel('relationship')
     }
   }, [
     isMobileViewport,
-    relationshipDialogCollapsed,
-    relationshipFromId,
-    relationshipToId,
+    relationshipModeActive,
     selectedPersonId,
-    showRelationshipGraph,
   ])
+
+  useEffect(() => {
+    if (!selectedPersonId || relationshipModeActive) return
+
+    setRightCollapsed(false)
+    if (isMobileViewport) {
+      setMobilePanel('inspector')
+      setViewControlsCollapsed(true)
+      setRelationshipDialogCollapsed(true)
+      setInspectorCollapsed(false)
+      return
+    }
+
+    setInspectorCollapsed(false)
+    setViewControlsCollapsed(true)
+    setRelationshipDialogCollapsed(true)
+  }, [isMobileViewport, relationshipModeActive, selectedPersonId])
 
   function setGraphWithoutHistory(nextGraph: GraphSchema) {
     skipHistoryRef.current = true
@@ -303,6 +328,7 @@ export function AppShell({
     setGraphWithoutHistory(initialGraph)
     setSaveState('saved')
     setViewerPersonId(linkedPersonId)
+    setIdentityStep('welcome')
   }, [initialGraph, linkedPersonId])
 
   useEffect(() => {
@@ -359,7 +385,7 @@ export function AppShell({
     return () => {
       window.clearTimeout(timeoutId)
     }
-  }, [graph, onPersistGraph])
+  }, [graph, onPersistGraph, treeId])
 
   const people = useMemo(() => graphPeople(graph), [graph])
   const peopleById = useMemo(() => personMap(people), [people])
@@ -557,7 +583,7 @@ export function AppShell({
     [currentUserId, currentViewerPerson?.id, graph, role, selectedPerson],
   )
 
-  async function refreshPendingRequests() {
+  const refreshPendingRequests = useCallback(async () => {
     if (role !== 'admin') {
       setPendingChangeRequests([])
       return
@@ -569,11 +595,11 @@ export function AppShell({
     } catch {
       setPendingChangeRequests([])
     }
-  }
+  }, [role, treeId])
 
   useEffect(() => {
     void refreshPendingRequests()
-  }, [treeId, role])
+  }, [refreshPendingRequests])
 
   function queueGraphChangeRequest(
     nextGraph: GraphSchema,
@@ -824,9 +850,6 @@ export function AppShell({
   ])
 
   function handleSelectPerson(id: string, options?: { fly?: boolean }) {
-    const relationshipModeActive =
-      !relationshipDialogCollapsed || showRelationshipGraph || !!relationshipFromId || !!relationshipToId
-
     if (relationshipModeActive) {
       if (relationshipFromId && relationshipToId) {
         setRelationshipFromId(id)
@@ -1031,7 +1054,7 @@ export function AppShell({
       return
     }
 
-    let next = addStandalonePerson(graph, seededName)
+    const next = addStandalonePerson(graph, seededName)
     let nextGraph = linkViewerEmail(next.graph, next.newPersonId)
     nextGraph = seedViewerProfilePhoto(nextGraph, next.newPersonId)
     nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'firstName', firstName || seededName)
@@ -1136,7 +1159,11 @@ export function AppShell({
 
     try {
       const invite = await createInviteLink(treeId, currentUserId, normalizedEmail, inviteRole)
-      const nextInviteLink = `${window.location.origin}/invite/${invite.token}`
+      const basePath =
+        window.location.pathname === '/'
+          ? window.location.origin
+          : `${window.location.origin}${window.location.pathname.replace(/\/$/, '')}`
+      const nextInviteLink = `${basePath}#/invite/${invite.token}`
       setInviteLink(nextInviteLink)
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(nextInviteLink)
@@ -1532,31 +1559,73 @@ export function AppShell({
           {!currentViewerPerson && (
             <div className="identity-onboarding">
               <div className="identity-onboarding__card">
-                <p className="mini-label">About you</p>
-                <h2>Link yourself into this family</h2>
-                <p className="identity-onboarding__lead">
-                  Claim your existing person card, or create yourself and connect to one known relative.
-                </p>
-
-                <div className="identity-onboarding__mode">
-                  <button
-                    type="button"
-                    className={identityMode === 'claim' ? 'active' : ''}
-                    onClick={() => setIdentityMode('claim')}
-                  >
-                    I already exist
-                  </button>
-                  <button
-                    type="button"
-                    className={identityMode === 'create' ? 'active' : ''}
-                    onClick={() => setIdentityMode('create')}
-                  >
-                    Create my card
-                  </button>
+                <div className="identity-onboarding__step-row">
+                  <p className="mini-label">Getting started</p>
+                  <span className="identity-onboarding__step-pill">
+                    {identityStep === 'welcome'
+                      ? 'Step 1 of 2'
+                      : identityStep === 'claim'
+                        ? 'Step 2 of 2 · Claim'
+                        : 'Step 2 of 2 · Create'}
+                  </span>
                 </div>
 
-                {identityMode === 'claim' ? (
+                {identityStep === 'welcome' ? (
+                  <div className="identity-onboarding__welcome">
+                    <h2>Welcome to {invitePreview?.treeName ?? 'this family tree'}</h2>
+                    <p className="identity-onboarding__lead">
+                      Before you start editing, link this account to your person card in the family.
+                    </p>
+                    <div className="identity-onboarding__summary">
+                      <div className="identity-onboarding__summary-item">
+                        <span>Signed in as</span>
+                        <strong>{userEmail}</strong>
+                      </div>
+                      {invitePreview ? (
+                        <div className="identity-onboarding__summary-item">
+                          <span>Invite role</span>
+                          <strong>{invitePreview.role}</strong>
+                        </div>
+                      ) : null}
+                      <div className="identity-onboarding__summary-item">
+                        <span>Profile photo</span>
+                        <strong>
+                          Your Google photo will be used by default if your card does not already have one.
+                        </strong>
+                      </div>
+                    </div>
+                    <div className="identity-onboarding__choices">
+                      <button
+                        type="button"
+                        className="identity-onboarding__choice"
+                        onClick={() => {
+                          setIdentityMode('claim')
+                          setIdentityStep('claim')
+                        }}
+                      >
+                        <strong>I already exist</strong>
+                        <span>Search for your existing person card and claim it.</span>
+                      </button>
+                      <button
+                        type="button"
+                        className="identity-onboarding__choice"
+                        onClick={() => {
+                          setIdentityMode('create')
+                          setIdentityStep('create')
+                        }}
+                      >
+                        <strong>Create my card</strong>
+                        <span>Add yourself and connect to one known relative.</span>
+                      </button>
+                    </div>
+                  </div>
+                ) : identityMode === 'claim' ? (
                   <div className="identity-onboarding__body">
+                    <div className="identity-onboarding__back-row">
+                      <button type="button" className="secondary-button" onClick={() => setIdentityStep('welcome')}>
+                        Back
+                      </button>
+                    </div>
                     <PersonTokenSelector
                       label="Find yourself"
                       query={identityQuery}
@@ -1577,6 +1646,11 @@ export function AppShell({
                   </div>
                 ) : (
                   <div className="identity-onboarding__body">
+                    <div className="identity-onboarding__back-row">
+                      <button type="button" className="secondary-button" onClick={() => setIdentityStep('welcome')}>
+                        Back
+                      </button>
+                    </div>
                     <div className="form-grid identity-onboarding__grid">
                       <label>
                         <span>First name</span>
@@ -2050,8 +2124,9 @@ export function AppShell({
                   setRelationshipDialogCollapsed(false)
                   setViewControlsCollapsed(true)
                   setInspectorCollapsed(true)
-                } else {
-                  setRelationshipDialogCollapsed(true)
+                  setRightCollapsed(false)
+                  setSelectedPersonId(null)
+                  setSelectedEdgeId(null)
                 }
               }}
               role="button"
@@ -2063,8 +2138,9 @@ export function AppShell({
                     setRelationshipDialogCollapsed(false)
                     setViewControlsCollapsed(true)
                     setInspectorCollapsed(true)
-                  } else {
-                    setRelationshipDialogCollapsed(true)
+                    setRightCollapsed(false)
+                    setSelectedPersonId(null)
+                    setSelectedEdgeId(null)
                   }
                 }
               }}
@@ -2410,7 +2486,11 @@ export function AppShell({
                   className={mobilePanel === 'relationship' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
                   onClick={() => {
                     setRelationshipDialogCollapsed(false)
-                    setMobilePanel((current) => (current === 'relationship' ? 'none' : 'relationship'))
+                    setViewControlsCollapsed(true)
+                    setInspectorCollapsed(true)
+                    setSelectedPersonId(null)
+                    setSelectedEdgeId(null)
+                    setMobilePanel('relationship')
                   }}
                 >
                   Relationship

@@ -33,6 +33,7 @@ const SNAP_GRID: [number, number] = [24, 24]
 const ORGANIC_PERSON_RADIUS = 118
 const ORGANIC_FAMILY_RADIUS = 180
 const HOVER_CARD_SHOW_DELAY_MS = 220
+const CLICK_MOVE_TOLERANCE_PX = 6
 
 function snapTo(value: number, step: number): number {
   return Math.round(value / step) * step
@@ -245,15 +246,32 @@ function PersonNode({ data }: { data: PersonNodeData }) {
     onHoverStart,
     onHoverEnd,
   } = data
+  const pointerDownRef = useRef<{ x: number; y: number } | null>(null)
 
   return (
     <div
       className={`${selected ? 'flow-person-card selected' : 'flow-person-card'}${highlighted ? ' highlighted' : ''} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
       onMouseEnter={(event) => onHoverStart(person, event.currentTarget, event.buttons)}
       onMouseLeave={onHoverEnd}
-      onClick={(event) => {
+      onPointerDown={(event) => {
+        pointerDownRef.current = { x: event.clientX, y: event.clientY }
+      }}
+      onPointerUp={(event) => {
         event.stopPropagation()
-        onSelectPerson(person.id)
+        const origin = pointerDownRef.current
+        pointerDownRef.current = null
+        if (!origin) {
+          onSelectPerson(person.id)
+          return
+        }
+        const dx = event.clientX - origin.x
+        const dy = event.clientY - origin.y
+        if (Math.hypot(dx, dy) <= CLICK_MOVE_TOLERANCE_PX) {
+          onSelectPerson(person.id)
+        }
+      }}
+      onPointerCancel={() => {
+        pointerDownRef.current = null
       }}
     >
       <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
@@ -301,6 +319,7 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
     onHoverEnd,
     relationLabelsById,
   } = data
+  const pointerDownRef = useRef<Record<string, { x: number; y: number } | null>>({})
 
   return (
     <div className="flow-family-card">
@@ -327,9 +346,25 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
               className={`flow-family-person ${sexToneClass(person.sex)}`}
               onMouseEnter={(event) => onHoverStart(person, event.currentTarget, event.buttons)}
               onMouseLeave={onHoverEnd}
-              onClick={(event) => {
+              onPointerDown={(event) => {
+                pointerDownRef.current[person.id] = { x: event.clientX, y: event.clientY }
+              }}
+              onPointerUp={(event) => {
                 event.stopPropagation()
-                onSelectPerson(person.id)
+                const origin = pointerDownRef.current[person.id]
+                pointerDownRef.current[person.id] = null
+                if (!origin) {
+                  onSelectPerson(person.id)
+                  return
+                }
+                const dx = event.clientX - origin.x
+                const dy = event.clientY - origin.y
+                if (Math.hypot(dx, dy) <= CLICK_MOVE_TOLERANCE_PX) {
+                  onSelectPerson(person.id)
+                }
+              }}
+              onPointerCancel={() => {
+                pointerDownRef.current[person.id] = null
               }}
             >
               <PersonAvatar person={person} className="flow-person-photo" />
@@ -504,6 +539,8 @@ export function TreeCanvas({
   const hoverShowTimeoutRef = useRef<number | null>(null)
   const hoverHideTimeoutRef = useRef<number | null>(null)
   const suppressHoverRef = useRef(false)
+  const pointerDownRef = useRef(false)
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
   const people = useMemo(
     () => graphPeople(graph).filter((person) => visibleIds.has(person.id)),
     [graph, visibleIds],
@@ -530,7 +567,7 @@ export function TreeCanvas({
   }, [clearHoverHideTimeout, clearHoverShowTimeout])
 
   const handleHoverStart = useCallback((person: PersonView, element: HTMLElement, buttons: number) => {
-    if (buttons !== 0 || suppressHoverRef.current) {
+    if (buttons !== 0 || pointerDownRef.current || suppressHoverRef.current) {
       clearHoverShowTimeout()
       return
     }
@@ -548,7 +585,7 @@ export function TreeCanvas({
       },
     }
     hoverShowTimeoutRef.current = window.setTimeout(() => {
-      if (suppressHoverRef.current) {
+      if (pointerDownRef.current || suppressHoverRef.current) {
         hoverShowTimeoutRef.current = null
         return
       }
@@ -565,6 +602,23 @@ export function TreeCanvas({
       hoverHideTimeoutRef.current = null
     }, 120)
   }, [clearHoverHideTimeout, clearHoverShowTimeout])
+
+  useEffect(() => {
+    const element = canvasRef.current
+    if (!element) return
+
+    const updateSize = () => {
+      setCanvasSize({
+        width: element.clientWidth,
+        height: element.clientHeight,
+      })
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [])
 
   const familyUnits = useMemo(() => {
     const peopleById = personMap(people)
@@ -766,21 +820,21 @@ export function TreeCanvas({
   }, [deemphasizedIds, familyUnits, handleHoverEnd, handleHoverStart, highlightedNodeIds, layoutAlgorithm, layoutMode, onPersonQuickAction, onSelectPerson, people, relationLabelsById, selectedPersonId, visibleEdges])
 
   const hoveredPersonCardStyle = useMemo(() => {
-    if (!hoveredPersonCard || !canvasRef.current) return null
+    if (!hoveredPersonCard || !canvasSize.width || !canvasSize.height) return null
     const width = 248
     const height = 360
-    const canvasWidth = canvasRef.current.clientWidth
-    const canvasHeight = canvasRef.current.clientHeight
+    const canvasWidth = canvasSize.width
+    const canvasHeight = canvasSize.height
     const maxLeft = Math.max(12, canvasWidth - width - 12)
     const maxTop = Math.max(12, canvasHeight - height - 12)
-    let left =
+    const left =
       hoveredPersonCard.anchor.x + width <= canvasWidth - 12
         ? hoveredPersonCard.anchor.x
         : Math.max(12, hoveredPersonCard.anchor.x - width - 26)
-    let top = Math.min(maxTop, Math.max(12, hoveredPersonCard.anchor.y - height / 2))
+    const top = Math.min(maxTop, Math.max(12, hoveredPersonCard.anchor.y - height / 2))
 
     return { left: Math.min(maxLeft, left), top }
-  }, [hoveredPersonCard])
+  }, [canvasSize.height, canvasSize.width, hoveredPersonCard])
 
   const flowEdges = useMemo<FlowEdge[]>(() => {
     const nodeCenters = new Map<string, { x: number; y: number }>()
@@ -1709,8 +1763,37 @@ export function TreeCanvas({
     })
   }, [nodes, onSelectedPersonAnchorChange, selectedPersonId, viewportNonce])
 
+  useEffect(() => {
+    const handlePointerUp = () => {
+      pointerDownRef.current = false
+      window.setTimeout(() => {
+        suppressHoverRef.current = false
+      }, 80)
+    }
+
+    const handlePointerCancel = () => {
+      pointerDownRef.current = false
+      suppressHoverRef.current = false
+    }
+
+    window.addEventListener('pointerup', handlePointerUp)
+    window.addEventListener('pointercancel', handlePointerCancel)
+    return () => {
+      window.removeEventListener('pointerup', handlePointerUp)
+      window.removeEventListener('pointercancel', handlePointerCancel)
+    }
+  }, [])
+
   return (
-    <div className="canvas" ref={canvasRef}>
+    <div
+      className="canvas"
+      ref={canvasRef}
+      onPointerDownCapture={() => {
+        pointerDownRef.current = true
+        suppressHoverRef.current = true
+        cancelHoveredPersonCard()
+      }}
+    >
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1734,17 +1817,8 @@ export function TreeCanvas({
         onInit={(instance) => {
           flowInstanceRef.current = instance
         }}
-        onMoveStart={() => {
-          suppressHoverRef.current = true
-          cancelHoveredPersonCard()
-        }}
         onMove={() => {
           setViewportNonce((current) => current + 1)
-        }}
-        onMoveEnd={() => {
-          window.setTimeout(() => {
-            suppressHoverRef.current = false
-          }, 80)
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'person') {

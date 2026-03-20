@@ -65,12 +65,7 @@ function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [oauthSubmitting, setOauthSubmitting] = useState(false)
-
-  useEffect(() => {
-    if (invitePreview?.targetEmail) {
-      setEmail(invitePreview.targetEmail)
-    }
-  }, [invitePreview])
+  const effectiveEmail = invitePreview?.targetEmail ?? email
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -79,7 +74,7 @@ function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null })
     setSubmitting(true)
     setError('')
 
-    const response = await supabase.auth.signInWithPassword({ email, password })
+    const response = await supabase.auth.signInWithPassword({ email: effectiveEmail, password })
 
     if (response.error) {
       setError(response.error.message)
@@ -194,7 +189,7 @@ function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null })
               <span>Email</span>
               <input
                 type="email"
-                value={email}
+                value={effectiveEmail}
                 onChange={(event) => setEmail(event.target.value)}
                 autoComplete="email"
                 readOnly={Boolean(invitePreview)}
@@ -240,12 +235,15 @@ function NoTreeAccessScreen({
   session,
   onCreated,
   canCreateTree,
+  onSignOut,
 }: {
   session: Session
   onCreated: (tree: TreeAccess) => void
   canCreateTree: boolean
+  onSignOut: () => Promise<void>
 }) {
   const [creating, setCreating] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
   const [error, setError] = useState('')
 
   async function handleCreate() {
@@ -261,6 +259,17 @@ function NoTreeAccessScreen({
     }
   }
 
+  async function handleSignOut() {
+    setSigningOut(true)
+    setError('')
+    try {
+      await onSignOut()
+    } catch (signOutError) {
+      setError(signOutError instanceof Error ? signOutError.message : 'Unable to sign out.')
+      setSigningOut(false)
+    }
+  }
+
   return (
     <main className="auth-screen">
       <section className="auth-card">
@@ -272,14 +281,29 @@ function NoTreeAccessScreen({
             ? 'This account can bootstrap the primary tree.'
             : 'This account is signed in, but it has not been attached to a family tree yet.'}
         </p>
+        {!canCreateTree ? (
+          <div className="auth-request-invite">
+            <span>Need access to a family tree?</span>
+            <a
+              href={`mailto:${INVITE_EMAIL}?subject=${encodeURIComponent('Vaṃsam invite request')}`}
+              className="auth-request-invite__button"
+            >
+              Request invite
+            </a>
+            <p>Signed in as {session.user.email ?? 'your account'}</p>
+          </div>
+        ) : null}
         {error && <p className="auth-form__error">{error}</p>}
-        {canCreateTree ? (
-          <div className="auth-form__actions">
+        <div className="auth-form__actions">
+          {canCreateTree ? (
             <button type="button" onClick={() => void handleCreate()} disabled={creating}>
               {creating ? 'Creating...' : 'Create primary tree'}
             </button>
-          </div>
-        ) : null}
+          ) : null}
+          <button type="button" className="ghost-button" onClick={() => void handleSignOut()} disabled={signingOut}>
+            {signingOut ? 'Signing out...' : 'Sign out'}
+          </button>
+        </div>
       </section>
     </main>
   )
@@ -297,13 +321,10 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
 
   useEffect(() => {
     if (!inviteToken) {
-      setInvitePreview(null)
-      setInviteLoading(false)
       return
     }
 
     let cancelled = false
-    setInviteLoading(true)
 
     void fetchInvitePreview(inviteToken)
       .then((preview) => {
@@ -361,10 +382,11 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
     if (!session?.user) return
 
     let cancelled = false
-    setTreeLoading(true)
-    setTreeError('')
 
     void (async () => {
+      if (cancelled) return
+      setTreeLoading(true)
+      setTreeError('')
       let inviteErrorMessage = ''
       if (inviteToken) {
         try {
@@ -444,6 +466,9 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
         session={session}
         onCreated={setTreeAccess}
         canCreateTree={session.user.email?.toLowerCase() === INVITE_EMAIL}
+        onSignOut={async () => {
+          await supabase?.auth.signOut()
+        }}
       />
     )
   }
@@ -458,6 +483,7 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
         session.user.user_metadata?.avatar_url ?? session.user.user_metadata?.picture ?? '',
       )}
       linkedPersonId={treeAccess.linkedPersonId}
+      invitePreview={invitePreview}
       role={treeAccess.role}
       canEdit={treeAccess.role !== 'viewer'}
       onPersistGraph={(graph) => savePrimaryTreeGraph(treeAccess.id, graph)}
@@ -469,15 +495,29 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
   )
 }
 
+function getInviteTokenFromLocation() {
+  if (typeof window === 'undefined') return null
+
+  const pathMatch = window.location.pathname.match(/\/invite\/([^/?#]+)/)
+  if (pathMatch?.[1]) return decodeURIComponent(pathMatch[1])
+
+  const hashMatch = window.location.hash.match(/#\/invite\/([^/?#]+)/)
+  if (hashMatch?.[1]) return decodeURIComponent(hashMatch[1])
+
+  return null
+}
+
 function InviteRoute() {
   const { token = '' } = useParams()
   return <SupabaseApp inviteToken={token} />
 }
 
 function App() {
+  const fallbackInviteToken = getInviteTokenFromLocation()
+
   return (
     <Routes>
-      <Route path="/" element={<SupabaseApp />} />
+      <Route path="/" element={<SupabaseApp inviteToken={fallbackInviteToken} />} />
       <Route path="/invite/:token" element={<InviteRoute />} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
