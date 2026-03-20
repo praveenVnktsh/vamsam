@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   applyNodeChanges,
   Background,
@@ -17,7 +17,14 @@ import {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import { EdgePredicate, type GraphSchema } from '../../domain/graph'
-import { displayName, graphPeople, personMap, type PersonView } from '../../domain/graphOps'
+import {
+  displayName,
+  graphPeople,
+  personMap,
+  quickBirthdayLabel,
+  resolveRelationship,
+  type PersonView,
+} from '../../domain/graphOps'
 import { PersonAvatar } from '../PersonAvatar'
 
 const X_SCALE = 10
@@ -36,6 +43,7 @@ type TreeCanvasProps = {
   deemphasizedIds: Set<string>
   visibleEdges: GraphSchema['edges']
   highlightedEdgeIds: Set<string>
+  highlightedNodeIds: Set<string>
   selectedPersonId: string
   selectedEdgeId: string | null
   layoutMode: 'person' | 'family'
@@ -44,8 +52,11 @@ type TreeCanvasProps = {
   organicLiveSimulation: boolean
   autoCenter: boolean
   flyToPersonRequest: { nonce: number; personId: string } | null
+  fitToNodeIdsRequest: { nonce: number; nodeIds: string[] } | null
   onSelectPerson: (id: string) => void
+  onSelectedPersonAnchorChange?: (anchor: { x: number; y: number } | null) => void
   onSelectEdge: (id: string | null) => void
+  currentViewerPerson: PersonView | null
   onMovePerson: (id: string, x: number, y: number) => void
   onMoveFamily: (memberIds: string[], dx: number, dy: number) => void
   onPersonQuickAction: (
@@ -57,7 +68,11 @@ type TreeCanvasProps = {
 type PersonNodeData = {
   person: PersonView
   selected: boolean
+  highlighted: boolean
   deemphasized: boolean
+  relationToViewer: string
+  onHoverStart: (person: PersonView, element: HTMLElement) => void
+  onHoverEnd: () => void
   onQuickAction: (
     personId: string,
     action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
@@ -72,11 +87,15 @@ type FamilyNodeData = {
   leftPerson: PersonView
   rightPerson: PersonView
   selectedPersonId: string
+  highlightedNodeIds: Set<string>
   onSelectPerson: (id: string) => void
   deemphasizedIds: Set<string>
+  relationLabelsById: Map<string, string>
   avgX: number
   avgY: number
   memberIds: string[]
+  onHoverStart: (person: PersonView, element: HTMLElement) => void
+  onHoverEnd: () => void
   onQuickAction: (
     personId: string,
     action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
@@ -92,20 +111,130 @@ function sexToneClass(sex: string) {
   return 'sex-unspecified'
 }
 
-function PersonNode({ data }: { data: PersonNodeData }) {
-  const { person, selected, deemphasized, onQuickAction } = data
+function GlobalHoverCard({
+  graph,
+  person,
+  currentViewerPerson,
+  onQuickAction,
+  onMouseEnter,
+  onMouseLeave,
+}: {
+  graph: GraphSchema
+  person: PersonView
+  currentViewerPerson: PersonView | null
+  onQuickAction: (
+    personId: string,
+    action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
+  ) => void
+  onMouseEnter: () => void
+  onMouseLeave: () => void
+}) {
+  const birthdayLabel = quickBirthdayLabel(person.dob)
+  const relationshipToViewer =
+    currentViewerPerson && currentViewerPerson.id !== person.id
+      ? resolveRelationship(graph, person.id, currentViewerPerson.id)
+      : null
+  const relationLabel = relationshipToViewer?.socialLabels?.ta
+    ? `Your ${relationshipToViewer.socialLabels.ta} · ${relationshipToViewer.socialLabels.taLatin} · ${relationshipToViewer.socialLabels.en}`
+    : relationshipToViewer?.labels?.ta
+      ? `Your ${relationshipToViewer.labels.ta} · ${relationshipToViewer.labels.taLatin} · ${relationshipToViewer.labels.en}`
+      : currentViewerPerson && currentViewerPerson.id === person.id
+        ? 'This is you'
+        : ''
+  const infoRows = [
+    relationLabel ? { label: 'Relation', value: relationLabel } : null,
+    birthdayLabel ? { label: 'Birthday', value: birthdayLabel } : null,
+    person.currentResidence ? { label: 'Lives in', value: person.currentResidence } : null,
+    person.birthPlace ? { label: 'From', value: person.birthPlace } : null,
+    person.branch ? { label: 'Branch', value: person.branch } : null,
+    person.years ? { label: 'Life', value: person.years } : null,
+  ].filter(Boolean) as Array<{ label: string; value: string }>
 
   return (
     <div
-      className={`${selected ? 'flow-person-card selected' : 'flow-person-card'} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
+      className="flow-hover-panel"
+      role="toolbar"
+      aria-label={`Quick actions for ${displayName(person)}`}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
     >
-      <div className="flow-card-actions" role="toolbar" aria-label={`Quick actions for ${displayName(person)}`}>
-        <button type="button" title="Add parent" aria-label="Add parent" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'parent') }}>↑</button>
-        <button type="button" title="Add child" aria-label="Add child" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'child') }}>↓</button>
-        <button type="button" title="Add sibling" aria-label="Add sibling" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'sibling') }}>≋</button>
-        <button type="button" title="Add partner" aria-label="Add partner" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}>↔</button>
-        <button type="button" title="Delete node" aria-label="Delete node" className="danger" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}>×</button>
+      <div className={`flow-hover-panel__hero ${sexToneClass(person.sex)}`}>
+        <PersonAvatar person={person} className="flow-hover-panel__cover-photo" />
+        <div className="flow-hover-panel__overlay">
+          <strong>{displayName(person)}</strong>
+          <small>{person.currentResidence || person.birthPlace || person.branch || 'Family member'}</small>
+        </div>
       </div>
+      <div className="flow-hover-panel__details">
+        {infoRows.slice(0, 4).map((item) => (
+          <div key={`${item.label}:${item.value}`} className="flow-hover-panel__detail">
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+          </div>
+        ))}
+      </div>
+      <div className="flow-hover-panel__actions">
+        <button
+          type="button"
+          className="flow-hover-panel__icon-button"
+          aria-label={`Add parent for ${displayName(person)}`}
+          data-tooltip="Add parent"
+          onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'parent') }}
+        >
+          <span aria-hidden="true">↑</span>
+        </button>
+        <button
+          type="button"
+          className="flow-hover-panel__icon-button"
+          aria-label={`Add child for ${displayName(person)}`}
+          data-tooltip="Add child"
+          onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'child') }}
+        >
+          <span aria-hidden="true">↓</span>
+        </button>
+        <button
+          type="button"
+          className="flow-hover-panel__icon-button"
+          aria-label={`Add sibling for ${displayName(person)}`}
+          data-tooltip="Add sibling"
+          onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'sibling') }}
+        >
+          <span aria-hidden="true">≈</span>
+        </button>
+        <button
+          type="button"
+          className="flow-hover-panel__icon-button"
+          aria-label={`Add partner for ${displayName(person)}`}
+          data-tooltip="Add partner"
+          onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}
+        >
+          <span aria-hidden="true">↔</span>
+        </button>
+      </div>
+      <div className="flow-hover-panel__footer">
+        <button
+          type="button"
+          className="danger flow-hover-panel__icon-button"
+          aria-label={`Delete ${displayName(person)}`}
+          data-tooltip="Delete person"
+          onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function PersonNode({ data }: { data: PersonNodeData }) {
+  const { person, selected, highlighted, deemphasized, relationToViewer, onHoverStart, onHoverEnd } = data
+
+  return (
+    <div
+      className={`${selected ? 'flow-person-card selected' : 'flow-person-card'}${highlighted ? ' highlighted' : ''} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
+      onMouseEnter={(event) => onHoverStart(person, event.currentTarget)}
+      onMouseLeave={onHoverEnd}
+    >
       <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
       <Handle id="target-left" type="target" position={Position.Left} className="flow-handle" />
       <Handle id="target-bottom" type="target" position={Position.Bottom} className="flow-handle" />
@@ -117,6 +246,7 @@ function PersonNode({ data }: { data: PersonNodeData }) {
       <PersonAvatar person={person} className="flow-person-photo" />
       <div>
         <strong>{displayName(person)}</strong>
+        {relationToViewer ? <small className="flow-person-relation">{relationToViewer}</small> : null}
         <small>{person.years}</small>
       </div>
     </div>
@@ -139,7 +269,17 @@ function UnionNode({ data }: { data: UnionNodeData }) {
 }
 
 function FamilyNode({ data }: { data: FamilyNodeData }) {
-  const { leftPerson, rightPerson, selectedPersonId, onSelectPerson, deemphasizedIds, onQuickAction } = data
+  const {
+    leftPerson,
+    rightPerson,
+    selectedPersonId,
+    highlightedNodeIds,
+    onSelectPerson,
+    deemphasizedIds,
+    onHoverStart,
+    onHoverEnd,
+    relationLabelsById,
+  } = data
 
   return (
     <div className="flow-family-card">
@@ -158,19 +298,14 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
             className={
               person.id === selectedPersonId
                 ? `flow-family-person-shell active ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
-                : `flow-family-person-shell ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}`
+                : `flow-family-person-shell ${sexToneClass(person.sex)}${deemphasizedIds.has(person.id) ? ' deemphasized' : ''}${highlightedNodeIds.has(person.id) ? ' highlighted' : ''}`
             }
           >
-            <div className="flow-card-actions flow-card-actions-inline" role="toolbar" aria-label={`Quick actions for ${displayName(person)}`}>
-              <button type="button" title="Add parent" aria-label="Add parent" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'parent') }}>↑</button>
-              <button type="button" title="Add child" aria-label="Add child" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'child') }}>↓</button>
-              <button type="button" title="Add sibling" aria-label="Add sibling" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'sibling') }}>≋</button>
-              <button type="button" title="Add partner" aria-label="Add partner" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'partner') }}>↔</button>
-              <button type="button" title="Delete node" aria-label="Delete node" className="danger" onClick={(event) => { event.stopPropagation(); onQuickAction(person.id, 'delete') }}>×</button>
-            </div>
             <button
               type="button"
               className={`flow-family-person ${sexToneClass(person.sex)}`}
+              onMouseEnter={(event) => onHoverStart(person, event.currentTarget)}
+              onMouseLeave={onHoverEnd}
               onClick={(event) => {
                 event.stopPropagation()
                 onSelectPerson(person.id)
@@ -179,6 +314,9 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
               <PersonAvatar person={person} className="flow-person-photo" />
               <span>
                 <strong>{displayName(person)}</strong>
+                {relationLabelsById.get(person.id) ? (
+                  <small className="flow-person-relation">{relationLabelsById.get(person.id)}</small>
+                ) : null}
                 <small>{person.years}</small>
               </span>
             </button>
@@ -319,6 +457,7 @@ export function TreeCanvas({
   deemphasizedIds,
   visibleEdges,
   highlightedEdgeIds,
+  highlightedNodeIds,
   selectedPersonId,
   selectedEdgeId,
   layoutMode,
@@ -327,16 +466,56 @@ export function TreeCanvas({
   organicLiveSimulation,
   autoCenter,
   flyToPersonRequest,
+  fitToNodeIdsRequest,
   onSelectPerson,
+  onSelectedPersonAnchorChange,
   onSelectEdge,
+  currentViewerPerson,
   onMovePerson,
   onMoveFamily,
   onPersonQuickAction,
 }: TreeCanvasProps) {
+  const canvasRef = useRef<HTMLDivElement | null>(null)
+  const [viewportNonce, setViewportNonce] = useState(0)
+  const [hoveredPersonCard, setHoveredPersonCard] = useState<{
+    person: PersonView
+    anchor: { x: number; y: number }
+  } | null>(null)
+  const hoverHideTimeoutRef = useRef<number | null>(null)
   const people = useMemo(
     () => graphPeople(graph).filter((person) => visibleIds.has(person.id)),
     [graph, visibleIds],
   )
+
+  const clearHoverHideTimeout = useCallback(() => {
+    if (hoverHideTimeoutRef.current !== null) {
+      window.clearTimeout(hoverHideTimeoutRef.current)
+      hoverHideTimeoutRef.current = null
+    }
+  }, [])
+
+  const handleHoverStart = useCallback((person: PersonView, element: HTMLElement) => {
+    clearHoverHideTimeout()
+    const canvasElement = canvasRef.current
+    if (!canvasElement) return
+    const canvasRect = canvasElement.getBoundingClientRect()
+    const elementRect = element.getBoundingClientRect()
+    setHoveredPersonCard({
+      person,
+      anchor: {
+        x: elementRect.right - canvasRect.left + 14,
+        y: elementRect.top - canvasRect.top + elementRect.height / 2,
+      },
+    })
+  }, [clearHoverHideTimeout])
+
+  const handleHoverEnd = useCallback(() => {
+    clearHoverHideTimeout()
+    hoverHideTimeoutRef.current = window.setTimeout(() => {
+      setHoveredPersonCard(null)
+      hoverHideTimeoutRef.current = null
+    }, 120)
+  }, [clearHoverHideTimeout])
 
   const familyUnits = useMemo(() => {
     const peopleById = personMap(people)
@@ -384,6 +563,31 @@ export function TreeCanvas({
     return map
   }, [familyUnits])
 
+  const relationLabelsById = useMemo(() => {
+    const labels = new Map<string, string>()
+    if (!currentViewerPerson) return labels
+
+    for (const person of people) {
+      if (person.id === currentViewerPerson.id) {
+        labels.set(person.id, 'You')
+        continue
+      }
+
+      const relationship = resolveRelationship(graph, person.id, currentViewerPerson.id)
+      const label =
+        relationship.socialLabels
+          ? `${relationship.socialLabels.ta} · ${relationship.socialLabels.taLatin} · ${relationship.socialLabels.en}`
+          : relationship.labels
+            ? `${relationship.labels.ta} · ${relationship.labels.taLatin} · ${relationship.labels.en}`
+            : relationship.label
+
+      if (!label) continue
+      labels.set(person.id, label)
+    }
+
+    return labels
+  }, [currentViewerPerson, graph, people])
+
   const flowNodes = useMemo<FlowNode<PersonNodeData | UnionNodeData | FamilyNodeData>[]>(() => {
     if (layoutMode === 'family') {
       const unitMemberIds = new Set(familyUnits.flatMap((unit) => unit.memberIds))
@@ -398,7 +602,11 @@ export function TreeCanvas({
           data: {
             person,
             selected: person.id === selectedPersonId,
+            highlighted: highlightedNodeIds.has(person.id),
             deemphasized: deemphasizedIds.has(person.id),
+            relationToViewer: relationLabelsById.get(person.id) ?? '',
+            onHoverStart: handleHoverStart,
+            onHoverEnd: handleHoverEnd,
             onQuickAction: onPersonQuickAction,
           },
         }))
@@ -413,11 +621,15 @@ export function TreeCanvas({
           leftPerson: unit.leftPerson,
           rightPerson: unit.rightPerson,
           selectedPersonId,
+          highlightedNodeIds,
           onSelectPerson,
           deemphasizedIds,
+          relationLabelsById,
           avgX: unit.avgX,
           avgY: unit.avgY,
           memberIds: unit.memberIds,
+          onHoverStart: handleHoverStart,
+          onHoverEnd: handleHoverEnd,
           onQuickAction: onPersonQuickAction,
         },
       }))
@@ -431,10 +643,14 @@ export function TreeCanvas({
       position: { x: person.x * X_SCALE, y: person.y * Y_SCALE },
       draggable: layoutAlgorithm !== 'organic',
       selectable: true,
-      data: {
+        data: {
         person,
         selected: person.id === selectedPersonId,
+        highlighted: highlightedNodeIds.has(person.id),
         deemphasized: deemphasizedIds.has(person.id),
+        relationToViewer: relationLabelsById.get(person.id) ?? '',
+        onHoverStart: handleHoverStart,
+        onHoverEnd: handleHoverEnd,
         onQuickAction: onPersonQuickAction,
       },
     }))
@@ -496,7 +712,23 @@ export function TreeCanvas({
     })
 
     return [...personNodes, ...unionNodes]
-  }, [deemphasizedIds, familyUnits, layoutAlgorithm, layoutMode, onPersonQuickAction, onSelectPerson, people, selectedPersonId, visibleEdges])
+  }, [deemphasizedIds, familyUnits, handleHoverEnd, handleHoverStart, highlightedNodeIds, layoutAlgorithm, layoutMode, onPersonQuickAction, onSelectPerson, people, relationLabelsById, selectedPersonId, visibleEdges])
+
+  const hoveredPersonCardStyle = useMemo(() => {
+    if (!hoveredPersonCard || !canvasRef.current) return null
+    const width = 248
+    const height = 360
+    const canvasWidth = canvasRef.current.clientWidth
+    const canvasHeight = canvasRef.current.clientHeight
+    const maxLeft = Math.max(12, canvasWidth - width - 12)
+    const maxTop = Math.max(12, canvasHeight - height - 12)
+    const left =
+      hoveredPersonCard.anchor.x + width <= canvasWidth - 12
+        ? hoveredPersonCard.anchor.x
+        : Math.max(12, hoveredPersonCard.anchor.x - width - 26)
+    const top = Math.min(maxTop, Math.max(12, hoveredPersonCard.anchor.y - height / 2))
+    return { left: Math.min(maxLeft, left), top }
+  }, [hoveredPersonCard])
 
   const flowEdges = useMemo<FlowEdge[]>(() => {
     const nodeCenters = new Map<string, { x: number; y: number }>()
@@ -937,6 +1169,7 @@ export function TreeCanvas({
   const [edges, setEdges, onEdgesChange] = useEdgesState(flowEdges)
   const flowInstanceRef = useRef<ReactFlowInstance | null>(null)
   const handledFlyNonceRef = useRef<number | null>(null)
+  const handledFitNonceRef = useRef<number | null>(null)
   const organicVelocityRef = useRef(new Map<string, { x: number; y: number }>())
   const organicStableFramesRef = useRef(0)
   const organicAnchorRef = useRef<{ x: number; y: number } | null>(null)
@@ -1352,8 +1585,89 @@ export function TreeCanvas({
     })
   }, [flyToPersonRequest, nodes])
 
+  useEffect(() => {
+    if (!fitToNodeIdsRequest?.nodeIds?.length) return
+    if (handledFitNonceRef.current === fitToNodeIdsRequest.nonce) return
+    const instance = flowInstanceRef.current
+    if (!instance || nodes.length === 0) return
+
+    const targetNodeIds = new Set<string>()
+    for (const requestedId of fitToNodeIdsRequest.nodeIds) {
+      const directNode = nodes.find((node) => node.id === requestedId)
+      if (directNode) {
+        targetNodeIds.add(directNode.id)
+        continue
+      }
+
+      const familyNode = nodes.find((node) => {
+        if (node.type !== 'family') return false
+        const data = node.data as FamilyNodeData
+        return data.memberIds.includes(requestedId)
+      })
+      if (familyNode) {
+        targetNodeIds.add(familyNode.id)
+      }
+    }
+
+    if (targetNodeIds.size === 0) return
+    handledFitNonceRef.current = fitToNodeIdsRequest.nonce
+
+    requestAnimationFrame(() => {
+      void instance.fitView({
+        padding: 0.28,
+        duration: 320,
+        nodes: Array.from(targetNodeIds).map((id) => ({ id })),
+        maxZoom: 1.05,
+      })
+    })
+  }, [fitToNodeIdsRequest, nodes])
+
+  useEffect(() => {
+    const canvasElement = canvasRef.current
+    const instance = flowInstanceRef.current
+    if (!canvasElement || !instance || !selectedPersonId) {
+      onSelectedPersonAnchorChange?.(null)
+      return
+    }
+
+    const targetNode =
+      nodes.find((node) => node.id === selectedPersonId) ??
+      nodes.find((node) => {
+        if (node.type !== 'family') return false
+        const data = node.data as FamilyNodeData
+        return data.memberIds.includes(selectedPersonId)
+      })
+
+    if (!targetNode) {
+      onSelectedPersonAnchorChange?.(null)
+      return
+    }
+
+    const viewport = instance.getViewport()
+    const rect = canvasElement.getBoundingClientRect()
+    const x = targetNode.position.x * viewport.zoom + viewport.x
+    const y = targetNode.position.y * viewport.zoom + viewport.y
+    const width =
+      targetNode.type === 'family'
+        ? 280
+        : targetNode.type === 'union'
+          ? 20
+          : 200
+    const height =
+      targetNode.type === 'family'
+        ? 112
+        : targetNode.type === 'union'
+          ? 20
+          : 92
+
+    onSelectedPersonAnchorChange?.({
+      x: Math.max(0, Math.min(rect.width, x + (width * viewport.zoom) / 2)),
+      y: Math.max(0, Math.min(rect.height, y - (height * viewport.zoom) / 2)),
+    })
+  }, [nodes, onSelectedPersonAnchorChange, selectedPersonId, viewportNonce])
+
   return (
-    <div className="canvas">
+    <div className="canvas" ref={canvasRef}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1374,6 +1688,9 @@ export function TreeCanvas({
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         onInit={(instance) => {
           flowInstanceRef.current = instance
+        }}
+        onMove={() => {
+          setViewportNonce((current) => current + 1)
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'person') {
@@ -1421,6 +1738,20 @@ export function TreeCanvas({
         />
         <Controls />
       </ReactFlow>
+      {hoveredPersonCard && hoveredPersonCardStyle ? (
+        <div className="canvas-hover-layer">
+          <div className="canvas-hover-layer__card" style={hoveredPersonCardStyle}>
+            <GlobalHoverCard
+              graph={graph}
+              person={hoveredPersonCard.person}
+              currentViewerPerson={currentViewerPerson}
+              onQuickAction={onPersonQuickAction}
+              onMouseEnter={clearHoverHideTimeout}
+              onMouseLeave={handleHoverEnd}
+            />
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -33,6 +33,8 @@ export type PersonView = {
   firstName: string
   nickname: string
   lastName: string
+  email: string
+  ownerUserId: string
   sex: string
   dob: string
   dod: string
@@ -134,6 +136,8 @@ export function graphPeople(graph: GraphSchema): PersonView[] {
     firstName: getAttrString(entity, 'firstName'),
     nickname: getAttrString(entity, 'nickname'),
     lastName: getAttrString(entity, 'lastName'),
+    email: getAttrString(entity, 'email'),
+    ownerUserId: getAttrString(entity, 'ownerUserId'),
     sex: getAttrString(entity, 'sex') || getAttrString(entity, 'gender'),
     branch: getAttrString(entity, 'branch'),
     photo: getAttrString(entity, 'photo'),
@@ -154,6 +158,79 @@ export function displayName(
   person: Pick<PersonView, 'nickname' | 'firstName' | 'label'>,
 ): string {
   return person.nickname.trim() || person.firstName.trim() || person.label
+}
+
+const PARENT_LIKE_PREDICATES = new Set<EdgePredicate>([
+  EdgePredicate.PARENT_OF,
+  EdgePredicate.GUARDIAN_OF,
+  EdgePredicate.STEP_PARENT_OF,
+])
+
+export function editableBranchPersonIds(graph: GraphSchema, viewerPersonId: string): Set<string> {
+  if (!viewerPersonId) return new Set()
+
+  const branch = new Set<string>([viewerPersonId])
+  const queue = [viewerPersonId]
+
+  for (const edge of graph.edges) {
+    if (
+      edge.predicate === EdgePredicate.PARTNER_OF &&
+      (edge.src === viewerPersonId || edge.dst === viewerPersonId)
+    ) {
+      branch.add(edge.src)
+      branch.add(edge.dst)
+      if (!queue.includes(edge.src)) queue.push(edge.src)
+      if (!queue.includes(edge.dst)) queue.push(edge.dst)
+    }
+  }
+
+  while (queue.length > 0) {
+    const current = queue.shift()!
+    for (const edge of graph.edges) {
+      if (!PARENT_LIKE_PREDICATES.has(edge.predicate) || edge.src !== current) continue
+      if (branch.has(edge.dst)) continue
+      branch.add(edge.dst)
+      queue.push(edge.dst)
+    }
+  }
+
+  return branch
+}
+
+export function canDirectlyEditPerson(
+  graph: GraphSchema,
+  currentUserId: string,
+  viewerPersonId: string,
+  role: 'admin' | 'editor' | 'viewer',
+  person: PersonView | null | undefined,
+): boolean {
+  if (!person) return false
+  if (role === 'admin') return true
+  if (role === 'viewer' || !viewerPersonId) return false
+
+  const branch = editableBranchPersonIds(graph, viewerPersonId)
+  if (!branch.has(person.id)) return false
+
+  return !person.ownerUserId || person.ownerUserId === currentUserId
+}
+
+export function canDirectlyManageRelationship(
+  graph: GraphSchema,
+  currentUserId: string,
+  viewerPersonId: string,
+  role: 'admin' | 'editor' | 'viewer',
+  srcPerson: PersonView | null | undefined,
+  dstPerson: PersonView | null | undefined,
+): boolean {
+  if (!srcPerson || !dstPerson) return false
+  if (role === 'admin') return true
+  if (role === 'viewer' || !viewerPersonId) return false
+
+  const branch = editableBranchPersonIds(graph, viewerPersonId)
+  const endpointAllowed = (person: PersonView) =>
+    branch.has(person.id) && (!person.ownerUserId || person.ownerUserId === currentUserId)
+
+  return endpointAllowed(srcPerson) && endpointAllowed(dstPerson)
 }
 
 function possessiveName(name: string): string {
@@ -181,6 +258,32 @@ export function fullName(
 ): string {
   const combined = `${person.firstName.trim()} ${person.lastName.trim()}`.trim()
   return combined || person.label
+}
+
+export function quickBirthdayLabel(dob: string): string {
+  const trimmed = dob.trim()
+  const match = trimmed.match(/^(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?$/)
+  if (!match) return ''
+
+  const year = Number(match[1])
+  const month = match[2] ? Number(match[2]) : null
+  const day = match[3] ? Number(match[3]) : null
+
+  if (month && day) {
+    const date = new Date(Date.UTC(2000, month - 1, day))
+    const label = date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      timeZone: 'UTC',
+    })
+    return `Birthday ${label}`
+  }
+
+  if (year) {
+    return `Born ${year}`
+  }
+
+  return ''
 }
 
 export function personInitials(
@@ -456,6 +559,8 @@ export function softDeletePerson(graph: GraphSchema, personId: string): GraphSch
           firstName: '',
           nickname: '',
           lastName: '',
+          email: '',
+          ownerUserId: '',
           sex: '',
           dob: '',
           dod: '',
@@ -681,6 +786,8 @@ export function addConnectedPerson(
       firstName: cleanName,
       nickname: '',
       lastName: '',
+      email: '',
+      ownerUserId: '',
       sex: '',
       dob: '',
       dod: '',
@@ -782,6 +889,8 @@ export function addStandalonePerson(
       firstName: cleanName,
       nickname: '',
       lastName: '',
+      email: '',
+      ownerUserId: '',
       sex: '',
       dob: '',
       dod: '',
@@ -867,6 +976,8 @@ export function addRelative(
       firstName: seededName,
       nickname: '',
       lastName: selectedPerson.lastName,
+      email: '',
+      ownerUserId: '',
       sex: '',
       years: type === 'child' ? '2026-' : '',
       branch: type === 'child' ? 'Next generation' : selectedPerson.branch,
@@ -2288,6 +2399,50 @@ function cousinRelationshipLabel(graph: GraphSchema, fromId: string, toId: strin
   return `${ordinal(degree)} cousin ${removedLabel(removal)}`
 }
 
+function contextualizedCousinLabel(
+  graph: GraphSchema,
+  from: PersonView,
+  to: PersonView,
+): string {
+  const baseLabel = cousinRelationshipLabel(graph, from.id, to.id)
+  if (!baseLabel.includes('removed')) {
+    return baseLabel
+  }
+
+  const fromAncestors = ancestorDepths(graph, from.id)
+  const toAncestors = ancestorDepths(graph, to.id)
+  let best:
+    | {
+        fromDepth: number
+        toDepth: number
+        score: number
+      }
+    | undefined
+
+  for (const [ancestorId, fromDepth] of fromAncestors.entries()) {
+    const toDepth = toAncestors.get(ancestorId)
+    if (toDepth === undefined) continue
+    if (fromDepth < 2 || toDepth < 2) continue
+
+    const score = fromDepth + toDepth
+    if (
+      !best ||
+      score < best.score ||
+      (score === best.score && Math.max(fromDepth, toDepth) < Math.max(best.fromDepth, best.toDepth))
+    ) {
+      best = { fromDepth, toDepth, score }
+    }
+  }
+
+  if (!best) return baseLabel
+
+  if (best.fromDepth < best.toDepth) {
+    return from.sex.trim().toLowerCase() === 'female' ? 'aunty' : 'uncle'
+  }
+
+  return baseLabel
+}
+
 function socialAddressForResolvedRelationship(
   graph: GraphSchema,
   from: PersonView,
@@ -2518,13 +2673,13 @@ export function resolveRelationship(
     hasBloodConnection &&
     parentIdsOf(graph, fromId).some((parentId) => toAuntUncleIds.has(parentId))
   ) {
-    const resolved = buildFreeformRelationship(cousinRelationshipLabel(graph, fromId, toId), path)
+    const resolved = buildFreeformRelationship(contextualizedCousinLabel(graph, from, to), path)
     resolved.socialLabel = socialAddressForResolvedRelationship(graph, from, to, resolved)
     return resolved
   }
 
   if (bloodPath.length > 0) {
-    const cousinLabel = cousinRelationshipLabel(graph, fromId, toId)
+    const cousinLabel = contextualizedCousinLabel(graph, from, to)
     if (cousinLabel !== 'cousin' || bloodPath.length > 4) {
       const resolved = buildFreeformRelationship(cousinLabel, path)
       resolved.socialLabel = socialAddressForResolvedRelationship(graph, from, to, resolved)

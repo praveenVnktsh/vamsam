@@ -4,11 +4,21 @@ import {
   encryptGraphBackup,
 } from '../data/backupCrypto'
 import {
+  createInviteLink,
+  fetchPendingChangeRequests,
+  linkUserToPerson,
+  makeChangeRequestPayload,
+  reviewChangeRequest,
+  submitChangeRequest,
+  type ChangeRequest,
+  type InviteRole,
+} from '../data/cloudGraph'
+import {
   loadRecentSnapshots,
   saveGraphSnapshot,
   type GraphSnapshot,
 } from '../data/storage'
-import { EdgePredicate, type GraphSchema } from '../domain/graph'
+import { EdgePredicate, EntityType, type GraphSchema } from '../domain/graph'
 import {
   addConnectedPerson,
   addConnection,
@@ -16,6 +26,8 @@ import {
   addRelative,
   addStandalonePerson,
   autoLayoutGraph,
+  canDirectlyEditPerson,
+  canDirectlyManageRelationship,
   connectPeopleAsSiblings,
   deleteEdge,
   descendantPersonIds,
@@ -52,6 +64,9 @@ type AppShellProps = {
   initialGraph: GraphSchema
   treeId: string
   userEmail: string
+  currentUserId: string
+  linkedPersonId: string | null
+  role: 'admin' | 'editor' | 'viewer'
   canEdit: boolean
   onPersistGraph: (graph: GraphSchema) => Promise<void>
   onResetGraph: () => Promise<GraphSchema>
@@ -62,20 +77,30 @@ export function AppShell({
   initialGraph,
   treeId,
   userEmail,
+  currentUserId,
+  linkedPersonId,
+  role,
   canEdit,
   onPersistGraph,
   onSignOut,
 }: AppShellProps) {
   type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
   const centerStageRef = useRef<HTMLElement | null>(null)
+  const rightStackRef = useRef<HTMLDivElement | null>(null)
   const [graph, setGraph] = useState<GraphSchema>(initialGraph)
   const [leftCollapsed, setLeftCollapsed] = useState(true)
   const [rightCollapsed, setRightCollapsed] = useState(true)
+  const [centerStageSize, setCenterStageSize] = useState({ width: 0, height: 0 })
+  const [rightStackHeight, setRightStackHeight] = useState(0)
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [flyToPersonRequest, setFlyToPersonRequest] = useState<{
     nonce: number
     personId: string
+  } | null>(null)
+  const [fitToNodeIdsRequest, setFitToNodeIdsRequest] = useState<{
+    nonce: number
+    nodeIds: string[]
   } | null>(null)
   const [search, setSearch] = useState('')
   const [depth, setDepth] = useState<(typeof depthOptions)[number]>(99)
@@ -98,6 +123,26 @@ export function AppShell({
   const [relationshipToId, setRelationshipToId] = useState<string>('')
   const [relationshipFromQuery, setRelationshipFromQuery] = useState('')
   const [relationshipToQuery, setRelationshipToQuery] = useState('')
+  const [inviteEmail, setInviteEmail] = useState('')
+  const [inviteRole, setInviteRole] = useState<InviteRole>('viewer')
+  const [inviteLink, setInviteLink] = useState('')
+  const [inviteLoading, setInviteLoading] = useState(false)
+  const [inviteError, setInviteError] = useState<string | null>(null)
+  const [identityMode, setIdentityMode] = useState<'claim' | 'create'>('claim')
+  const [identityQuery, setIdentityQuery] = useState('')
+  const [identitySelectedId, setIdentitySelectedId] = useState('')
+  const [identitySelection, setIdentitySelection] = useState<{ type: 'existing'; id: string } | null>(null)
+  const [identityFirstName, setIdentityFirstName] = useState('')
+  const [identityLastName, setIdentityLastName] = useState('')
+  const [identityNickname, setIdentityNickname] = useState('')
+  const [identityLinkPersonId, setIdentityLinkPersonId] = useState('')
+  const [identityLinkQuery, setIdentityLinkQuery] = useState('')
+  const [identityLinkSelection, setIdentityLinkSelection] = useState<{ type: 'existing'; id: string } | null>(null)
+  const [identityLinkType, setIdentityLinkType] = useState<'child_of' | 'parent_of' | 'sibling_of' | 'partner_of'>('child_of')
+  const [identityError, setIdentityError] = useState<string | null>(null)
+  const [viewerPersonId, setViewerPersonId] = useState<string | null>(linkedPersonId)
+  const [pendingChangeRequests, setPendingChangeRequests] = useState<ChangeRequest[]>([])
+  const [changeRequestBusyId, setChangeRequestBusyId] = useState<string | null>(null)
   const graphRef = useRef(graph)
   const layoutRunRef = useRef(0)
   const saveRunRef = useRef(0)
@@ -173,6 +218,11 @@ export function AppShell({
     })
   }
 
+  function assignOwnerIfNeeded(nextGraph: GraphSchema, personId: string) {
+    if (role === 'admin' || !personId) return nextGraph
+    return updatePersonAttr(nextGraph, personId, 'ownerUserId', currentUserId)
+  }
+
   function handleUndo() {
     const previous = graphHistoryRef.current.undo.pop()
     if (!previous) return
@@ -199,11 +249,53 @@ export function AppShell({
     setValidationMessage(null)
     setGraphWithoutHistory(initialGraph)
     setSaveState('saved')
-  }, [initialGraph])
+    setViewerPersonId(linkedPersonId)
+  }, [initialGraph, linkedPersonId])
 
   useEffect(() => {
     void loadRecentSnapshots(treeId).then(setRecentSnapshots).catch(() => undefined)
   }, [treeId])
+
+  useEffect(() => {
+    const stage = centerStageRef.current
+    if (!stage) return
+
+    const updateSize = () => {
+      setCenterStageSize({
+        width: stage.clientWidth,
+        height: stage.clientHeight,
+      })
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(stage)
+    window.addEventListener('resize', updateSize)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateSize)
+    }
+  }, [])
+
+  useEffect(() => {
+    const stack = rightStackRef.current
+    if (!stack) return
+
+    const updateSize = () => {
+      setRightStackHeight(stack.clientHeight)
+    }
+
+    updateSize()
+    const observer = new ResizeObserver(updateSize)
+    observer.observe(stack)
+    window.addEventListener('resize', updateSize)
+
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', updateSize)
+    }
+  }, [])
 
   useEffect(() => {
     if (skipHistoryRef.current) {
@@ -259,7 +351,21 @@ export function AppShell({
 
   const people = useMemo(() => graphPeople(graph), [graph])
   const peopleById = useMemo(() => personMap(people), [people])
+  const currentViewerPerson = useMemo(
+    () => (viewerPersonId ? peopleById.get(viewerPersonId) ?? null : null),
+    [peopleById, viewerPersonId],
+  )
   const selectedPerson = selectedPersonId ? peopleById.get(selectedPersonId) ?? null : null
+  const identityCandidates = useMemo(() => {
+    const query = identityQuery.trim().toLowerCase()
+    if (!query) return people
+    return people.filter((person) => {
+      const haystack = [displayName(person), fullName(person), person.nickname, person.email]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(query)
+    })
+  }, [identityQuery, people])
   const lineageBloodIds = useMemo(
     () =>
       viewMode === 'lineage'
@@ -351,6 +457,15 @@ export function AppShell({
     return edgeIds
   }, [graph.edges, relationshipPathIds])
 
+  useEffect(() => {
+    if (!showRelationshipGraph || relationshipPathIds.length === 0) return
+
+    setFitToNodeIdsRequest((current) => ({
+      nonce: (current?.nonce ?? 0) + 1,
+      nodeIds: relationshipPathIds,
+    }))
+  }, [relationshipPathIds, showRelationshipGraph])
+
   const visibleGraphEdges = useMemo(
     () => {
       if (showRelationshipGraph) {
@@ -410,6 +525,184 @@ export function AppShell({
       )
     })
   }, [search, sortedPeople])
+
+  const selectedPersonCanDirectEdit = useMemo(
+    () =>
+      canDirectlyEditPerson(
+        graph,
+        currentUserId,
+        currentViewerPerson?.id ?? '',
+        role,
+        selectedPerson,
+      ),
+    [currentUserId, currentViewerPerson?.id, graph, role, selectedPerson],
+  )
+
+  async function refreshPendingRequests() {
+    if (role !== 'admin') {
+      setPendingChangeRequests([])
+      return
+    }
+
+    try {
+      const requests = await fetchPendingChangeRequests(treeId)
+      setPendingChangeRequests(requests)
+    } catch {
+      setPendingChangeRequests([])
+    }
+  }
+
+  useEffect(() => {
+    void refreshPendingRequests()
+  }, [treeId, role])
+
+  function queueGraphChangeRequest(
+    nextGraph: GraphSchema,
+    options: {
+      actionType: string
+      summary: string
+      targetPersonId?: string | null
+      targetRelationshipId?: string | null
+    },
+  ) {
+    const payload = makeChangeRequestPayload(treeId, graphRef.current, nextGraph)
+    return submitChangeRequest({
+      treeId,
+      requesterUserId: currentUserId,
+      requesterEmail: userEmail,
+      actionType: options.actionType,
+      summary: options.summary,
+      payload,
+      targetPersonId: options.targetPersonId ?? null,
+      targetRelationshipId: options.targetRelationshipId ?? null,
+    }).then(() => {
+      setValidationMessage('Change request sent to admins for review.')
+      return refreshPendingRequests()
+    })
+  }
+
+  function canDirectlyApplyGraphChange(previousGraph: GraphSchema, nextGraph: GraphSchema) {
+    if (role === 'admin') return true
+    if (role === 'viewer') return false
+    if (!currentViewerPerson?.id) return false
+
+    const diff = makeChangeRequestPayload(treeId, previousGraph, nextGraph)
+    const nextPeopleById = personMap(graphPeople(nextGraph))
+    const previousPeopleById = personMap(graphPeople(previousGraph))
+
+    for (const row of diff.upsertPeople) {
+      const person = nextPeopleById.get(row.person_id)
+      if (
+        !canDirectlyEditPerson(
+          nextGraph,
+          currentUserId,
+          currentViewerPerson.id,
+          role,
+          person,
+        )
+      ) {
+        return false
+      }
+    }
+
+    for (const personId of diff.deletePersonIds) {
+      const person = previousPeopleById.get(personId)
+      if (
+        !canDirectlyEditPerson(
+          previousGraph,
+          currentUserId,
+          currentViewerPerson.id,
+          role,
+          person,
+        )
+      ) {
+        return false
+      }
+    }
+
+    for (const row of diff.upsertRelationships) {
+      const edge = row.edge
+      const srcPerson = nextPeopleById.get(edge.src) ?? previousPeopleById.get(edge.src)
+      const dstPerson = nextPeopleById.get(edge.dst) ?? previousPeopleById.get(edge.dst)
+      if (
+        !canDirectlyManageRelationship(
+          nextGraph,
+          currentUserId,
+          currentViewerPerson.id,
+          role,
+          srcPerson,
+          dstPerson,
+        )
+      ) {
+        return false
+      }
+    }
+
+    for (const relationshipId of diff.deleteRelationshipIds) {
+      const edge = previousGraph.edges.find((candidate) => candidate.id === relationshipId)
+      if (!edge) continue
+      const srcPerson = previousPeopleById.get(edge.src)
+      const dstPerson = previousPeopleById.get(edge.dst)
+      if (
+        !canDirectlyManageRelationship(
+          previousGraph,
+          currentUserId,
+          currentViewerPerson.id,
+          role,
+          srcPerson,
+          dstPerson,
+        )
+      ) {
+        return false
+      }
+    }
+
+    return true
+  }
+
+  function applyGraphChangeWithPermissions(
+    nextOrUpdater: GraphSchema | ((current: GraphSchema) => GraphSchema),
+    options: {
+      actionType: string
+      summary: string
+      targetPersonId?: string | null
+      targetRelationshipId?: string | null
+      allowQueue?: boolean
+    },
+  ) {
+    const current = graphRef.current
+    const nextGraph =
+      typeof nextOrUpdater === 'function'
+        ? (nextOrUpdater as (current: GraphSchema) => GraphSchema)(current)
+        : nextOrUpdater
+
+    const currentIssueKeys = new Set(
+      validateGraph(current).map(
+        (issue) => `${issue.code}:${issue.edgeId ?? ''}:${issue.entityId ?? ''}`,
+      ),
+    )
+    const newIssues = validateGraph(nextGraph).filter(
+      (issue) =>
+        !currentIssueKeys.has(`${issue.code}:${issue.edgeId ?? ''}:${issue.entityId ?? ''}`),
+    )
+    if (newIssues.length > 0) {
+      setValidationMessage(newIssues[0]?.message ?? 'This change would create an invalid graph.')
+      return
+    }
+
+    if (canDirectlyApplyGraphChange(current, nextGraph)) {
+      setValidationMessage(null)
+      applyValidatedGraphChange(nextGraph)
+      return
+    }
+
+    if (options.allowQueue === false) {
+      setValidationMessage('You do not have permission to edit this person directly.')
+      return
+    }
+
+    void queueGraphChangeRequest(nextGraph, options)
+  }
 
   useEffect(() => {
     const person = peopleById.get(relationshipFromId)
@@ -546,10 +839,28 @@ export function AppShell({
     if (!canEdit) return
     if (!selectedPerson) return
     const result = addRelative(graph, selectedPerson, type)
-    applyValidatedGraphChange(result.graph)
-    setSelectedPersonId(result.newPersonId)
-    expandInspectorPanel()
-    setRightCollapsed(false)
+    const nextGraph = assignOwnerIfNeeded(result.graph, result.newPersonId)
+    const relativeLabel =
+      type === 'parent'
+        ? 'parent'
+        : type === 'child'
+          ? 'child'
+          : type === 'partner'
+            ? 'partner'
+            : 'sibling'
+    if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
+      applyValidatedGraphChange(nextGraph)
+      setSelectedPersonId(result.newPersonId)
+      expandInspectorPanel()
+      setRightCollapsed(false)
+      return
+    }
+
+    void queueGraphChangeRequest(nextGraph, {
+      actionType: 'create_person',
+      summary: `Add ${relativeLabel} for ${displayName(selectedPerson)}.`,
+      targetPersonId: selectedPerson.id,
+    })
   }
 
   function handleCanvasPersonQuickAction(
@@ -564,7 +875,11 @@ export function AppShell({
       if (!window.confirm(`Hard delete ${displayName(person)} and remove all related edges?`)) {
         return
       }
-      applyValidatedGraphChange((current) => hardDeletePerson(current, personId))
+      applyGraphChangeWithPermissions((current) => hardDeletePerson(current, personId), {
+        actionType: 'delete_person',
+        summary: `Delete ${displayName(person)}.`,
+        targetPersonId: personId,
+      })
       if (selectedPersonId === personId) {
         setSelectedPersonId(null)
         setSelectedEdgeId(null)
@@ -574,17 +889,132 @@ export function AppShell({
     }
 
     const result = addRelative(graph, person, action)
-    applyValidatedGraphChange(result.graph)
-    setSelectedPersonId(result.newPersonId)
-    setRightCollapsed(false)
+    const nextGraph = assignOwnerIfNeeded(result.graph, result.newPersonId)
+    if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
+      applyValidatedGraphChange(nextGraph)
+      setSelectedPersonId(result.newPersonId)
+      setRightCollapsed(false)
+      return
+    }
+
+    void queueGraphChangeRequest(nextGraph, {
+      actionType: 'create_person',
+      summary: `Add ${action} for ${displayName(person)}.`,
+      targetPersonId: person.id,
+    })
   }
 
   function handleCreateStandalonePerson(defaultName = 'New Person') {
     if (!canEdit) return
     const result = addStandalonePerson(graph, defaultName)
-    applyValidatedGraphChange(result.graph)
+    applyValidatedGraphChange(assignOwnerIfNeeded(result.graph, result.newPersonId))
     setSelectedPersonId(result.newPersonId)
     setRightCollapsed(false)
+  }
+
+  function linkViewerEmail(graphToUpdate: GraphSchema, personId: string): GraphSchema {
+    const normalizedEmail = userEmail.trim().toLowerCase()
+    return {
+      ...graphToUpdate,
+      entities: graphToUpdate.entities.map((entity) => {
+        if (entity.entityType !== EntityType.PERSON) return entity
+        const currentEmail = String(entity.attrs?.email ?? '').trim().toLowerCase()
+        if (entity.id === personId) {
+          return {
+            ...entity,
+            attrs: {
+              ...entity.attrs,
+              email: userEmail,
+            },
+          }
+        }
+        if (currentEmail === normalizedEmail) {
+          return {
+            ...entity,
+            attrs: {
+              ...entity.attrs,
+              email: '',
+            },
+          }
+        }
+        return entity
+      }),
+    }
+  }
+
+  async function handleClaimExistingIdentity() {
+    if (!identitySelectedId) {
+      setIdentityError('Choose your person record first.')
+      return
+    }
+
+    try {
+      const nextGraph = await linkUserToPerson(
+        treeId,
+        currentUserId,
+        userEmail,
+        identitySelectedId,
+        graphRef.current,
+      )
+      setGraphWithoutHistory(nextGraph)
+      setViewerPersonId(identitySelectedId)
+      setSelectedPersonId(identitySelectedId)
+      expandInspectorPanel()
+      setIdentityError(null)
+    } catch (error) {
+      setIdentityError(
+        error instanceof Error ? error.message : 'Unable to link your identity right now.',
+      )
+    }
+  }
+
+  async function handleCreateIdentity() {
+    const firstName = identityFirstName.trim()
+    const lastName = identityLastName.trim()
+    const nickname = identityNickname.trim()
+    const seededName = `${firstName} ${lastName}`.trim() || nickname || 'New Person'
+
+    if (!seededName) {
+      setIdentityError('Enter at least a first name.')
+      return
+    }
+
+    let next = addStandalonePerson(graph, seededName)
+    let nextGraph = linkViewerEmail(next.graph, next.newPersonId)
+    nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'firstName', firstName || seededName)
+    nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'lastName', lastName)
+    nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'nickname', nickname)
+
+    if (identityLinkPersonId) {
+      if (identityLinkType === 'child_of') {
+        nextGraph = addConnection(nextGraph, identityLinkPersonId, next.newPersonId, EdgePredicate.PARENT_OF)
+      } else if (identityLinkType === 'parent_of') {
+        nextGraph = addConnection(nextGraph, next.newPersonId, identityLinkPersonId, EdgePredicate.PARENT_OF)
+      } else if (identityLinkType === 'partner_of') {
+        nextGraph = addConnection(nextGraph, identityLinkPersonId, next.newPersonId, EdgePredicate.PARTNER_OF)
+      } else if (identityLinkType === 'sibling_of') {
+        nextGraph = connectPeopleAsSiblings(nextGraph, identityLinkPersonId, next.newPersonId)
+      }
+    }
+
+    try {
+      const linkedGraph = await linkUserToPerson(
+        treeId,
+        currentUserId,
+        userEmail,
+        next.newPersonId,
+        nextGraph,
+      )
+      setGraphWithoutHistory(linkedGraph)
+      setViewerPersonId(next.newPersonId)
+      setSelectedPersonId(next.newPersonId)
+      expandInspectorPanel()
+      setIdentityError(null)
+    } catch (error) {
+      setIdentityError(
+        error instanceof Error ? error.message : 'Unable to create your linked identity.',
+      )
+    }
   }
 
   function handleAutoOrganize() {
@@ -641,6 +1071,52 @@ export function AppShell({
     }
   }
 
+  async function handleCreateInvite() {
+    const normalizedEmail = inviteEmail.trim().toLowerCase()
+    if (!normalizedEmail) {
+      setInviteError('Enter an email address to create an invite link.')
+      return
+    }
+
+    setInviteLoading(true)
+    setInviteError(null)
+
+    try {
+      const invite = await createInviteLink(treeId, currentUserId, normalizedEmail, inviteRole)
+      const nextInviteLink = `${window.location.origin}/invite/${invite.token}`
+      setInviteLink(nextInviteLink)
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(nextInviteLink)
+      }
+    } catch (error) {
+      setInviteError(error instanceof Error ? error.message : 'Unable to create invite link.')
+    } finally {
+      setInviteLoading(false)
+    }
+  }
+
+  async function handleReviewChangeRequest(request: ChangeRequest, approve: boolean) {
+    setChangeRequestBusyId(request.id)
+    try {
+      const nextGraph = await reviewChangeRequest({
+        request,
+        approve,
+        currentGraph: graphRef.current,
+      })
+      if (approve) {
+        setValidationMessage(`Approved request: ${request.summary}`)
+        setGraphWithoutHistory(nextGraph)
+      }
+      await refreshPendingRequests()
+    } catch (error) {
+      setValidationMessage(
+        error instanceof Error ? error.message : 'Unable to review this change request.',
+      )
+    } finally {
+      setChangeRequestBusyId(null)
+    }
+  }
+
   const relationshipResult =
     relationshipFromId && relationshipToId
       ? resolveRelationship(graph, relationshipFromId, relationshipToId)
@@ -652,6 +1128,43 @@ export function AppShell({
 
   const relationshipFrom = peopleById.get(relationshipFromId)
   const relationshipTo = peopleById.get(relationshipToId)
+  const selectedPersonRelationToViewer =
+    selectedPerson && currentViewerPerson
+      ? selectedPerson.id === currentViewerPerson.id
+        ? 'You'
+        : (() => {
+            const relationship = resolveRelationship(graph, selectedPerson.id, currentViewerPerson.id)
+            return (
+              relationship.socialLabels?.ta
+                ? `Your ${relationship.socialLabels.ta} · ${relationship.socialLabels.taLatin} · ${relationship.socialLabels.en}`
+                : relationship.labels?.ta
+                  ? `Your ${relationship.labels.ta} · ${relationship.labels.taLatin} · ${relationship.labels.en}`
+                  : relationship.socialLabel
+                    ? `Your ${relationship.socialLabel}`
+                    : relationship.label
+                      ? `Your ${relationship.label}`
+                      : ''
+            )
+          })()
+      : ''
+  const inspectorFlyoutStyle = useMemo<CSSProperties>(() => {
+    if (!centerStageSize.width || !centerStageSize.height) {
+      return { left: 16, top: 148 }
+    }
+
+    const estimatedWidth = 420
+    const top = Math.min(
+      Math.max(16, rightStackHeight + 26),
+      Math.max(16, centerStageSize.height - 320),
+    )
+    const maxHeight = Math.max(260, centerStageSize.height - top - 16)
+    const maxLeft = Math.max(16, centerStageSize.width - estimatedWidth - 16)
+    return {
+      left: Math.min(16, maxLeft),
+      top,
+      maxHeight,
+    }
+  }, [centerStageSize.height, centerStageSize.width, rightStackHeight])
   const sharedDnaPercent =
     relationshipFromId && relationshipToId
       ? estimateSharedDnaPercent(graph, relationshipFromId, relationshipToId)
@@ -708,6 +1221,11 @@ export function AppShell({
                 <span className="save-indicator__label">{saveStateLabel}</span>
               </div>
               <p className="left-sidebar__account">{userEmail}</p>
+              <p className="left-sidebar__identity">
+                {currentViewerPerson
+                  ? `Linked identity: ${displayName(currentViewerPerson)}`
+                  : 'Linked identity: not set'}
+              </p>
             </div>
           </div>
 
@@ -722,6 +1240,92 @@ export function AppShell({
             </div>
             {validationMessage ? <p className="validation-banner">{validationMessage}</p> : null}
           </div>
+
+          {role === 'admin' ? (
+            <div className="left-sidebar__section">
+              <div className="section-title-row">
+                <span className="mini-label">Invite link</span>
+              </div>
+              <div className="form-grid">
+                <label>
+                  <span>Email</span>
+                  <input
+                    type="email"
+                    value={inviteEmail}
+                    onChange={(event) => setInviteEmail(event.target.value)}
+                    placeholder="family@example.com"
+                  />
+                </label>
+                <label>
+                  <span>Role</span>
+                  <select
+                    value={inviteRole}
+                    onChange={(event) => setInviteRole(event.target.value as InviteRole)}
+                  >
+                    <option value="viewer">Viewer</option>
+                    <option value="editor">Editor</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </label>
+              </div>
+              <div className="storage-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleCreateInvite()}
+                  disabled={inviteLoading}
+                >
+                  {inviteLoading ? 'Creating...' : 'Create invite link'}
+                </button>
+              </div>
+              {inviteError ? <p className="validation-banner">{inviteError}</p> : null}
+              {inviteLink ? (
+                <div className="invite-link-card">
+                  <p className="invite-link-card__label">Copied invite link</p>
+                  <input type="text" readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
+          {role === 'admin' ? (
+            <div className="left-sidebar__section">
+              <div className="section-title-row">
+                <span className="mini-label">Change requests</span>
+                <span className="counts-pill">{pendingChangeRequests.length}</span>
+              </div>
+              <div className="snapshot-list">
+                {pendingChangeRequests.length === 0 ? (
+                  <p className="snapshot-list__empty">No pending requests.</p>
+                ) : (
+                  pendingChangeRequests.map((request) => (
+                    <div key={request.id} className="snapshot-list-item">
+                      <strong>{request.summary}</strong>
+                      <small>{request.requesterEmail}</small>
+                      <div className="storage-actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={changeRequestBusyId === request.id}
+                          onClick={() => void handleReviewChangeRequest(request, true)}
+                        >
+                          Approve
+                        </button>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={changeRequestBusyId === request.id}
+                          onClick={() => void handleReviewChangeRequest(request, false)}
+                        >
+                          Reject
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          ) : null}
 
           <div className="left-sidebar__section">
             <div className="storage-actions">
@@ -828,6 +1432,7 @@ export function AppShell({
             }
             visibleEdges={visibleGraphEdges}
           highlightedEdgeIds={showRelationshipGraph ? relationshipPathEdgeIds : new Set()}
+          highlightedNodeIds={showRelationshipGraph ? new Set(relationshipPathIds) : new Set()}
           selectedPersonId={selectedPersonId ?? ''}
           selectedEdgeId={selectedEdgeId}
           layoutMode={layoutMode}
@@ -836,6 +1441,7 @@ export function AppShell({
           organicLiveSimulation={organicLiveSimulation}
           autoCenter={false}
           flyToPersonRequest={flyToPersonRequest}
+          fitToNodeIdsRequest={fitToNodeIdsRequest}
             onSelectPerson={(id) => handleSelectPerson(id)}
             onSelectEdge={(id) => {
               setSelectedEdgeId(id)
@@ -844,24 +1450,158 @@ export function AppShell({
               }
             }}
             onMovePerson={(id, x, y) =>
-              canEdit ? applyValidatedGraphChange((current) => updatePersonPosition(current, id, x, y)) : undefined
+              canEdit
+                ? (() => {
+                    const person = peopleById.get(id)
+                    if (
+                      !canDirectlyEditPerson(
+                        graphRef.current,
+                        currentUserId,
+                        currentViewerPerson?.id ?? '',
+                        role,
+                        person,
+                      )
+                    ) {
+                      return
+                    }
+                    applyValidatedGraphChange((current) => updatePersonPosition(current, id, x, y))
+                  })()
+                : undefined
             }
             onMoveFamily={(memberIds, dx, dy) =>
               canEdit
-                ? applyValidatedGraphChange((current) =>
-                    memberIds.reduce(
+                ? (() => {
+                    const nextGraphPreview = memberIds.reduce(
                       (nextGraph, memberId) => {
                         const person = graphPeople(nextGraph).find((candidate) => candidate.id === memberId)
                         if (!person) return nextGraph
                         return updatePersonPosition(nextGraph, memberId, person.x + dx, person.y + dy)
                       },
-                      current,
-                    ),
-                  )
+                      graphRef.current,
+                    )
+                    if (
+                      !canDirectlyApplyGraphChange(
+                        graphRef.current,
+                        nextGraphPreview,
+                      )
+                    ) {
+                      return
+                    }
+                    applyValidatedGraphChange(nextGraphPreview)
+                  })()
                 : undefined
             }
+            currentViewerPerson={currentViewerPerson}
             onPersonQuickAction={handleCanvasPersonQuickAction}
           />
+
+          {!currentViewerPerson && (
+            <div className="identity-onboarding">
+              <div className="identity-onboarding__card">
+                <p className="mini-label">About you</p>
+                <h2>Link yourself into this family</h2>
+                <p className="identity-onboarding__lead">
+                  Claim your existing person card, or create yourself and connect to one known relative.
+                </p>
+
+                <div className="identity-onboarding__mode">
+                  <button
+                    type="button"
+                    className={identityMode === 'claim' ? 'active' : ''}
+                    onClick={() => setIdentityMode('claim')}
+                  >
+                    I already exist
+                  </button>
+                  <button
+                    type="button"
+                    className={identityMode === 'create' ? 'active' : ''}
+                    onClick={() => setIdentityMode('create')}
+                  >
+                    Create my card
+                  </button>
+                </div>
+
+                {identityMode === 'claim' ? (
+                  <div className="identity-onboarding__body">
+                    <PersonTokenSelector
+                      label="Find yourself"
+                      query={identityQuery}
+                      selectedPersonId={identitySelectedId}
+                      selection={identitySelection}
+                      onQueryChange={setIdentityQuery}
+                      onSelectionChange={(selection) => {
+                        const nextSelection = selection?.type === 'existing' ? selection : null
+                        setIdentitySelection(nextSelection)
+                        setIdentitySelectedId(nextSelection?.id ?? '')
+                      }}
+                      people={identityCandidates}
+                      placeholder="Search your name..."
+                    />
+                    <button type="button" onClick={handleClaimExistingIdentity}>
+                      Link this card to {userEmail}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="identity-onboarding__body">
+                    <div className="form-grid identity-onboarding__grid">
+                      <label>
+                        <span>First name</span>
+                        <input value={identityFirstName} onChange={(event) => setIdentityFirstName(event.target.value)} />
+                      </label>
+                      <label>
+                        <span>Last name</span>
+                        <input value={identityLastName} onChange={(event) => setIdentityLastName(event.target.value)} />
+                      </label>
+                      <label>
+                        <span>Nickname</span>
+                        <input value={identityNickname} onChange={(event) => setIdentityNickname(event.target.value)} />
+                      </label>
+                    </div>
+
+                    <div className="identity-onboarding__connect">
+                      <PersonTokenSelector
+                        label="Known relative"
+                        query={identityLinkQuery}
+                        selectedPersonId={identityLinkPersonId}
+                        selection={identityLinkSelection}
+                        onQueryChange={setIdentityLinkQuery}
+                        onSelectionChange={(selection) => {
+                          const nextSelection = selection?.type === 'existing' ? selection : null
+                          setIdentityLinkSelection(nextSelection)
+                          setIdentityLinkPersonId(nextSelection?.id ?? '')
+                        }}
+                        people={people.filter((person) => person.email.trim().toLowerCase() !== userEmail.trim().toLowerCase())}
+                        placeholder="Optional known relative..."
+                        compact
+                      />
+                      <label>
+                        <span>Relationship</span>
+                        <select
+                          value={identityLinkType}
+                          onChange={(event) =>
+                            setIdentityLinkType(
+                              event.target.value as 'child_of' | 'parent_of' | 'sibling_of' | 'partner_of',
+                            )
+                          }
+                        >
+                          <option value="child_of">I am child of</option>
+                          <option value="parent_of">I am parent of</option>
+                          <option value="sibling_of">I am sibling of</option>
+                          <option value="partner_of">I am partner of</option>
+                        </select>
+                      </label>
+                    </div>
+
+                    <button type="button" onClick={handleCreateIdentity}>
+                      Create and link me
+                    </button>
+                  </div>
+                )}
+
+                {identityError ? <p className="validation-banner">{identityError}</p> : null}
+              </div>
+            </div>
+          )}
 
           {!graphHasRenderablePeople(graph) && (
             <div className="empty-canvas-state">
@@ -939,9 +1679,35 @@ export function AppShell({
               <span className="canvas-quick-add__icon">+</span>
               <span>{graphHasRenderablePeople(graph) ? 'New person' : 'First person'}</span>
             </button>
+
+            <button
+              type="button"
+              className="canvas-quick-add canvas-quick-add-secondary"
+              onClick={() => {
+                if (!currentViewerPerson) return
+                setSelectedPersonId(currentViewerPerson.id)
+                setSelectedEdgeId(null)
+                setRightCollapsed(false)
+                expandInspectorPanel()
+                setFlyToPersonRequest((current) => ({
+                  nonce: (current?.nonce ?? 0) + 1,
+                  personId: currentViewerPerson.id,
+                }))
+              }}
+              disabled={!currentViewerPerson}
+              aria-label="Fly to my node"
+              title={
+                currentViewerPerson
+                  ? `Fly to ${displayName(currentViewerPerson)}`
+                  : 'Link your email to a person to use Fly to me'
+              }
+            >
+              <span className="canvas-quick-add__icon canvas-quick-add__icon-secondary">◎</span>
+              <span>Fly to me</span>
+            </button>
           </div>
 
-          <div className="canvas-right-stack">
+          <div ref={rightStackRef} className="canvas-right-stack">
           <div
             className={`floating-controls${
               viewControlsCollapsed ? ' floating-controls-collapsed' : ''
@@ -1325,9 +2091,10 @@ export function AppShell({
             <div
               className={
                 inspectorCollapsed
-                  ? 'inspector-floating inspector-floating-collapsed'
-                  : 'inspector-floating'
+                  ? 'inspector-flyout inspector-flyout-collapsed'
+                  : 'inspector-flyout'
               }
+              style={inspectorFlyoutStyle}
               role="dialog"
               aria-label="Inspector"
             >
@@ -1335,16 +2102,22 @@ export function AppShell({
                 graph={graph}
                 selectedPerson={selectedPerson}
                 selectedPersonId={selectedPersonId ?? ''}
+                relationToViewer={selectedPersonRelationToViewer}
                 visibleIds={visibleIds}
                 allPeople={people}
                 collapsed={inspectorCollapsed}
+                canEditPerson={canEdit && selectedPersonCanDirectEdit}
+                canManageConnections={canEdit}
+                canDeletePerson={canEdit}
                 onFlyToNode={() => {
                   setFlyToPersonRequest((current) => ({
                     nonce: (current?.nonce ?? 0) + 1,
                     personId: selectedPerson.id,
                   }))
                 }}
-                onClose={() => setRightCollapsed(true)}
+                onClose={() => {
+                  setRightCollapsed(true)
+                }}
                 onToggleCollapse={() => {
                   if (inspectorCollapsed) {
                     expandInspectorPanel()
@@ -1355,7 +2128,7 @@ export function AppShell({
                 onCreateStandalonePerson={handleCreateStandalonePerson}
                 onQuickAddRelative={(type) => handleAddRelative(type)}
                 onUpdateAttr={(key, value) =>
-                  canEdit
+                  canEdit && selectedPersonCanDirectEdit
                     ? applyValidatedGraphChange((current) =>
                         updatePersonAttr(current, selectedPersonId ?? '', key, value),
                       )
@@ -1363,18 +2136,37 @@ export function AppShell({
                 }
                 onUpdateConnection={(edgeId, predicate) =>
                   canEdit
-                    ? applyValidatedGraphChange((current) =>
+                    ? applyGraphChangeWithPermissions((current) =>
                         updateEdge(current, edgeId, {
                           predicate: predicate as GraphSchema['edges'][number]['predicate'],
-                        }),
+                        }), {
+                          actionType: 'update_relationship',
+                          summary: `Update relationship for ${displayName(selectedPerson)}.`,
+                          targetPersonId: selectedPerson.id,
+                          targetRelationshipId: edgeId,
+                        }
                       )
                     : undefined
                 }
                 onReverseConnection={(edgeId) =>
-                  canEdit ? applyValidatedGraphChange((current) => reverseEdge(current, edgeId)) : undefined
+                  canEdit
+                    ? applyGraphChangeWithPermissions((current) => reverseEdge(current, edgeId), {
+                        actionType: 'reverse_relationship',
+                        summary: `Reverse relationship for ${displayName(selectedPerson)}.`,
+                        targetPersonId: selectedPerson.id,
+                        targetRelationshipId: edgeId,
+                      })
+                    : undefined
                 }
                 onDeleteConnection={(edgeId) =>
-                  canEdit ? applyValidatedGraphChange((current) => deleteEdge(current, edgeId)) : undefined
+                  canEdit
+                    ? applyGraphChangeWithPermissions((current) => deleteEdge(current, edgeId), {
+                        actionType: 'delete_relationship',
+                        summary: `Disconnect one relationship from ${displayName(selectedPerson)}.`,
+                        targetPersonId: selectedPerson.id,
+                        targetRelationshipId: edgeId,
+                      })
+                    : undefined
                 }
                 onAddConnectedPerson={(predicate, preferredName) => {
                   if (!canEdit) return
@@ -1384,12 +2176,21 @@ export function AppShell({
                       : predicate === 'child'
                         ? addParentPerson(graph, selectedPerson, preferredName)
                         : addConnectedPerson(graph, selectedPerson, predicate, preferredName)
-                  applyValidatedGraphChange(result.graph)
-                  setSelectedPersonId(result.newPersonId)
+                  const nextGraph = assignOwnerIfNeeded(result.graph, result.newPersonId)
+                  if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
+                    applyValidatedGraphChange(nextGraph)
+                    setSelectedPersonId(result.newPersonId)
+                    return
+                  }
+                  void queueGraphChangeRequest(nextGraph, {
+                    actionType: 'create_person',
+                    summary: `Add a connected person for ${displayName(selectedPerson)}.`,
+                    targetPersonId: selectedPerson.id,
+                  })
                 }}
                 onConnectExistingPerson={(targetId, predicate) =>
                   canEdit
-                    ? applyValidatedGraphChange((current) =>
+                    ? applyGraphChangeWithPermissions((current) =>
                         predicate === 'sibling'
                           ? connectPeopleAsSiblings(current, selectedPerson.id, targetId)
                           : predicate === 'child'
@@ -1405,11 +2206,16 @@ export function AppShell({
                                 targetId,
                                 predicate as EdgePredicate,
                             ),
+                        {
+                          actionType: 'connect_people',
+                          summary: `Connect ${displayName(selectedPerson)} to another person.`,
+                          targetPersonId: selectedPerson.id,
+                        }
                       )
                     : undefined
                 }
                 onUploadPhoto={async (file) => {
-                  if (!canEdit || !selectedPersonId) return
+                  if (!canEdit || !selectedPersonId || !selectedPersonCanDirectEdit) return
                   const photoUrl = await uploadCompressedPersonPhoto(treeId, selectedPersonId, file)
                   applyValidatedGraphChange((current) => updatePersonAttr(current, selectedPersonId, 'photo', photoUrl))
                 }}
@@ -1419,7 +2225,11 @@ export function AppShell({
                   if (!window.confirm('Soft delete this person and remove their personal information?')) {
                     return
                   }
-                  applyValidatedGraphChange((current) => softDeletePerson(current, selectedPersonId))
+                  applyGraphChangeWithPermissions((current) => softDeletePerson(current, selectedPersonId), {
+                    actionType: 'soft_delete_person',
+                    summary: `Soft delete ${displayName(selectedPerson)}.`,
+                    targetPersonId: selectedPersonId,
+                  })
                 }}
                 onHardDeletePerson={() => {
                   if (!canEdit) return
@@ -1427,10 +2237,19 @@ export function AppShell({
                   if (!window.confirm('Hard delete this node and remove all related edges?')) {
                     return
                   }
-                  applyValidatedGraphChange((current) => hardDeletePerson(current, selectedPersonId))
-                  setSelectedPersonId(null)
-                  setSelectedEdgeId(null)
-                  setRightCollapsed(true)
+                  const nextGraph = hardDeletePerson(graphRef.current, selectedPersonId)
+                  if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
+                    applyValidatedGraphChange(nextGraph)
+                    setSelectedPersonId(null)
+                    setSelectedEdgeId(null)
+                    setRightCollapsed(true)
+                    return
+                  }
+                  void queueGraphChangeRequest(nextGraph, {
+                    actionType: 'delete_person',
+                    summary: `Delete ${displayName(selectedPerson)}.`,
+                    targetPersonId: selectedPersonId,
+                  })
                 }}
               />
             </div>

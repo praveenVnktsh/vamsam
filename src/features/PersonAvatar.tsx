@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { type PersonView, personInitials } from '../domain/graphOps'
+import { isStoredPhotoRef, resolvePhotoUrl } from '../data/photoStorage'
 
 type PersonAvatarProps = {
   person: Pick<PersonView, 'photo' | 'firstName' | 'lastName' | 'label' | 'nickname'>
@@ -17,15 +18,40 @@ function isImageSource(value: string) {
 }
 
 export function PersonAvatar({ person, className }: PersonAvatarProps) {
-  const photoSource = useMemo(
-    () => (isImageSource(person.photo) ? person.photo.trim() : ''),
-    [person.photo],
+  const photoValue = useMemo(() => person.photo.trim(), [person.photo])
+  const [photoSource, setPhotoSource] = useState(
+    photoValue && isImageSource(photoValue) ? photoValue : '',
   )
   const [imageFailed, setImageFailed] = useState(false)
 
   useEffect(() => {
     setImageFailed(false)
-  }, [photoSource])
+    if (!photoValue) {
+      setPhotoSource('')
+      return
+    }
+
+    if (isStoredPhotoRef(photoValue)) {
+      let cancelled = false
+      void resolvePhotoUrl(photoValue)
+        .then((url) => {
+          if (!cancelled) {
+            setPhotoSource(url)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) {
+            setPhotoSource('')
+          }
+        })
+
+      return () => {
+        cancelled = true
+      }
+    }
+
+    setPhotoSource(isImageSource(photoValue) ? photoValue : '')
+  }, [photoValue])
 
   if (photoSource && !imageFailed) {
     return (

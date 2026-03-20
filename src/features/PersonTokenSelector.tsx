@@ -16,6 +16,7 @@ type PersonTokenSelectorProps = {
   placeholder?: string
   compact?: boolean
   showSecondaryText?: boolean
+  disabled?: boolean
   onQueryChange: (value: string) => void
   onSelectionChange: (selection: Selection) => void
 }
@@ -30,6 +31,7 @@ export function PersonTokenSelector({
   placeholder = 'Type a name',
   compact = false,
   showSecondaryText = true,
+  disabled = false,
   onQueryChange,
   onSelectionChange,
 }: PersonTokenSelectorProps) {
@@ -69,16 +71,18 @@ export function PersonTokenSelector({
             className="relationship-token__clear"
             onClick={(event) => {
               event.stopPropagation()
-              onSelectionChange(null)
-              onQueryChange('')
-            }}
-          >
-            ×
-          </button>
+            onSelectionChange(null)
+            onQueryChange('')
+          }}
+          disabled={disabled}
+        >
+          ×
+        </button>
         </div>
       ) : (
         <input
           value={query}
+          disabled={disabled}
           onChange={(event) => {
             const nextQuery = event.target.value
             onQueryChange(nextQuery)
@@ -102,6 +106,7 @@ export function PersonTokenSelector({
                 onSelectionChange({ type: 'existing', id: person.id })
                 onQueryChange(fullName(person))
               }}
+              disabled={disabled}
             >
               <span>{fullName(person)}</span>
               {showSecondaryText && <small>Existing person</small>}
@@ -118,6 +123,7 @@ export function PersonTokenSelector({
               onClick={() => {
                 onSelectionChange({ type: 'new', name: query.trim() })
               }}
+              disabled={disabled}
             >
               <span>Add {query.trim()}</span>
               {showSecondaryText && <small>Create new person</small>}
