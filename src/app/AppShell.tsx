@@ -473,6 +473,11 @@ export function AppShell({
         : [],
     [graph, relationshipFromId, relationshipToId, showRelationshipGraph],
   )
+  const relationshipFitPathIds = useMemo(() => {
+    if (!relationshipFromId || !relationshipToId) return []
+    const resolvedPath = shortestPersonPath(graph, relationshipFromId, relationshipToId)
+    return resolvedPath.length > 0 ? resolvedPath : [relationshipFromId, relationshipToId]
+  }, [graph, relationshipFromId, relationshipToId])
   const relationshipBloodPathIds = useMemo(
     () =>
       showRelationshipGraph && relationshipFromId && relationshipToId
@@ -503,13 +508,13 @@ export function AppShell({
   }, [graph.edges, relationshipPathIds])
 
   useEffect(() => {
-    if (!relationshipFromId || !relationshipToId || relationshipPathIds.length === 0) return
+    if (!relationshipFromId || !relationshipToId || relationshipFitPathIds.length === 0) return
 
     setFitToNodeIdsRequest((current) => ({
       nonce: (current?.nonce ?? 0) + 1,
-      nodeIds: relationshipPathIds,
+      nodeIds: relationshipFitPathIds,
     }))
-  }, [relationshipFromId, relationshipPathIds, relationshipToId])
+  }, [relationshipFitPathIds, relationshipFromId, relationshipToId])
 
   const visibleGraphEdges = useMemo(
     () => {

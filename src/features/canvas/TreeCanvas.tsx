@@ -536,6 +536,7 @@ export function TreeCanvas({
     person: PersonView
     anchor: { x: number; y: number }
   } | null>(null)
+  const [canvasInteractive, setCanvasInteractive] = useState(true)
   const hoverShowTimeoutRef = useRef<number | null>(null)
   const hoverHideTimeoutRef = useRef<number | null>(null)
   const suppressHoverRef = useRef(false)
@@ -1689,10 +1690,12 @@ export function TreeCanvas({
     if (!instance || nodes.length === 0) return
 
     const targetNodeIds = new Set<string>()
+    const resolvedRequestIds = new Set<string>()
     for (const requestedId of fitToNodeIdsRequest.nodeIds) {
       const directNode = nodes.find((node) => node.id === requestedId)
       if (directNode) {
         targetNodeIds.add(directNode.id)
+        resolvedRequestIds.add(requestedId)
         continue
       }
 
@@ -1703,10 +1706,12 @@ export function TreeCanvas({
       })
       if (familyNode) {
         targetNodeIds.add(familyNode.id)
+        resolvedRequestIds.add(requestedId)
       }
     }
 
     if (targetNodeIds.size === 0) return
+    if (resolvedRequestIds.size < fitToNodeIdsRequest.nodeIds.length) return
     handledFitNonceRef.current = fitToNodeIdsRequest.nonce
 
     requestAnimationFrame(() => {
@@ -1803,14 +1808,14 @@ export function TreeCanvas({
         snapGrid={SNAP_GRID}
         selectNodesOnDrag={false}
         nodeDragThreshold={6}
-        nodesDraggable={layoutAlgorithm !== 'organic'}
+        nodesDraggable={canvasInteractive && layoutAlgorithm !== 'organic'}
         nodesConnectable={false}
-        elementsSelectable
+        elementsSelectable={canvasInteractive}
         edgesFocusable={false}
-        panOnDrag
+        panOnDrag={canvasInteractive}
         panOnScroll={false}
-        zoomOnPinch
-        zoomOnScroll
+        zoomOnPinch={canvasInteractive}
+        zoomOnScroll={canvasInteractive}
         minZoom={0.35}
         maxZoom={1.6}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
@@ -1871,7 +1876,7 @@ export function TreeCanvas({
           color="rgba(72, 77, 67, 0.18)"
           variant={BackgroundVariant.Lines}
         />
-        <Controls />
+        <Controls onInteractiveChange={setCanvasInteractive} />
       </ReactFlow>
       {hoveredPersonCard && hoveredPersonCardStyle ? (
         <div className="canvas-hover-layer">

@@ -59,6 +59,39 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   })
 }
 
+function buildOAuthRedirectUrl() {
+  if (typeof window === 'undefined') return ''
+
+  const base = `${window.location.origin}${window.location.pathname}`
+  const hashInviteMatch = window.location.hash.match(/^#\/invite\/[^/?#]+/)
+  return hashInviteMatch ? `${base}${hashInviteMatch[0]}` : base
+}
+
+function parseOAuthTokensFromHash() {
+  if (typeof window === 'undefined') return null
+
+  const hash = window.location.hash
+  if (!hash.includes('access_token=')) return null
+
+  const fragment = hash.startsWith('#/#') ? hash.slice(3) : hash.startsWith('#') ? hash.slice(1) : hash
+  const params = new URLSearchParams(fragment)
+  const accessToken = params.get('access_token')
+  const refreshToken = params.get('refresh_token')
+
+  if (!accessToken || !refreshToken) return null
+
+  return {
+    accessToken,
+    refreshToken,
+  }
+}
+
+function cleanOAuthHashFromUrl() {
+  if (typeof window === 'undefined') return
+  const nextUrl = `${window.location.origin}${window.location.pathname}${window.location.search}`
+  window.history.replaceState({}, document.title, nextUrl)
+}
+
 function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -92,7 +125,7 @@ function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null })
     const response = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.href,
+        redirectTo: buildOAuthRedirectUrl(),
       },
     })
 
@@ -318,6 +351,22 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
   const [treeError, setTreeError] = useState('')
   const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null)
   const [inviteLoading, setInviteLoading] = useState(Boolean(inviteToken))
+
+  useEffect(() => {
+    if (!supabase) return
+
+    const tokens = parseOAuthTokensFromHash()
+    if (!tokens) return
+
+    void supabase.auth
+      .setSession({
+        access_token: tokens.accessToken,
+        refresh_token: tokens.refreshToken,
+      })
+      .finally(() => {
+        cleanOAuthHashFromUrl()
+      })
+  }, [])
 
   useEffect(() => {
     if (!inviteToken) {
