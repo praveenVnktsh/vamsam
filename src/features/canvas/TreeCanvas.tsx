@@ -32,6 +32,7 @@ const Y_SCALE = 7
 const SNAP_GRID: [number, number] = [24, 24]
 const ORGANIC_PERSON_RADIUS = 118
 const ORGANIC_FAMILY_RADIUS = 180
+const HOVER_CARD_SHOW_DELAY_MS = 220
 
 function snapTo(value: number, step: number): number {
   return Math.round(value / step) * step
@@ -71,7 +72,8 @@ type PersonNodeData = {
   highlighted: boolean
   deemphasized: boolean
   relationToViewer: string
-  onHoverStart: (person: PersonView, element: HTMLElement) => void
+  onSelectPerson: (id: string) => void
+  onHoverStart: (person: PersonView, element: HTMLElement, buttons: number) => void
   onHoverEnd: () => void
   onQuickAction: (
     personId: string,
@@ -94,7 +96,7 @@ type FamilyNodeData = {
   avgX: number
   avgY: number
   memberIds: string[]
-  onHoverStart: (person: PersonView, element: HTMLElement) => void
+  onHoverStart: (person: PersonView, element: HTMLElement, buttons: number) => void
   onHoverEnd: () => void
   onQuickAction: (
     personId: string,
@@ -115,6 +117,7 @@ function GlobalHoverCard({
   graph,
   person,
   currentViewerPerson,
+  onSelectPerson,
   onQuickAction,
   onMouseEnter,
   onMouseLeave,
@@ -122,6 +125,7 @@ function GlobalHoverCard({
   graph: GraphSchema
   person: PersonView
   currentViewerPerson: PersonView | null
+  onSelectPerson: (id: string) => void
   onQuickAction: (
     personId: string,
     action: 'parent' | 'child' | 'partner' | 'sibling' | 'delete',
@@ -157,6 +161,10 @@ function GlobalHoverCard({
       aria-label={`Quick actions for ${displayName(person)}`}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelectPerson(person.id)
+      }}
     >
       <div className={`flow-hover-panel__hero ${sexToneClass(person.sex)}`}>
         <PersonAvatar person={person} className="flow-hover-panel__cover-photo" />
@@ -227,13 +235,26 @@ function GlobalHoverCard({
 }
 
 function PersonNode({ data }: { data: PersonNodeData }) {
-  const { person, selected, highlighted, deemphasized, relationToViewer, onHoverStart, onHoverEnd } = data
+  const {
+    person,
+    selected,
+    highlighted,
+    deemphasized,
+    relationToViewer,
+    onSelectPerson,
+    onHoverStart,
+    onHoverEnd,
+  } = data
 
   return (
     <div
       className={`${selected ? 'flow-person-card selected' : 'flow-person-card'}${highlighted ? ' highlighted' : ''} ${sexToneClass(person.sex)}${deemphasized ? ' deemphasized' : ''}`}
-      onMouseEnter={(event) => onHoverStart(person, event.currentTarget)}
+      onMouseEnter={(event) => onHoverStart(person, event.currentTarget, event.buttons)}
       onMouseLeave={onHoverEnd}
+      onClick={(event) => {
+        event.stopPropagation()
+        onSelectPerson(person.id)
+      }}
     >
       <Handle id="target-top" type="target" position={Position.Top} className="flow-handle" />
       <Handle id="target-left" type="target" position={Position.Left} className="flow-handle" />
@@ -304,7 +325,7 @@ function FamilyNode({ data }: { data: FamilyNodeData }) {
             <button
               type="button"
               className={`flow-family-person ${sexToneClass(person.sex)}`}
-              onMouseEnter={(event) => onHoverStart(person, event.currentTarget)}
+              onMouseEnter={(event) => onHoverStart(person, event.currentTarget, event.buttons)}
               onMouseLeave={onHoverEnd}
               onClick={(event) => {
                 event.stopPropagation()
@@ -459,7 +480,6 @@ export function TreeCanvas({
   highlightedEdgeIds,
   highlightedNodeIds,
   selectedPersonId,
-  selectedEdgeId,
   layoutMode,
   layoutAlgorithm,
   organicSeedNonce,
@@ -481,11 +501,20 @@ export function TreeCanvas({
     person: PersonView
     anchor: { x: number; y: number }
   } | null>(null)
+  const hoverShowTimeoutRef = useRef<number | null>(null)
   const hoverHideTimeoutRef = useRef<number | null>(null)
+  const suppressHoverRef = useRef(false)
   const people = useMemo(
     () => graphPeople(graph).filter((person) => visibleIds.has(person.id)),
     [graph, visibleIds],
   )
+
+  const clearHoverShowTimeout = useCallback(() => {
+    if (hoverShowTimeoutRef.current !== null) {
+      window.clearTimeout(hoverShowTimeoutRef.current)
+      hoverShowTimeoutRef.current = null
+    }
+  }, [])
 
   const clearHoverHideTimeout = useCallback(() => {
     if (hoverHideTimeoutRef.current !== null) {
@@ -494,28 +523,48 @@ export function TreeCanvas({
     }
   }, [])
 
-  const handleHoverStart = useCallback((person: PersonView, element: HTMLElement) => {
+  const cancelHoveredPersonCard = useCallback(() => {
+    clearHoverShowTimeout()
+    clearHoverHideTimeout()
+    setHoveredPersonCard(null)
+  }, [clearHoverHideTimeout, clearHoverShowTimeout])
+
+  const handleHoverStart = useCallback((person: PersonView, element: HTMLElement, buttons: number) => {
+    if (buttons !== 0 || suppressHoverRef.current) {
+      clearHoverShowTimeout()
+      return
+    }
+    clearHoverShowTimeout()
     clearHoverHideTimeout()
     const canvasElement = canvasRef.current
     if (!canvasElement) return
     const canvasRect = canvasElement.getBoundingClientRect()
     const elementRect = element.getBoundingClientRect()
-    setHoveredPersonCard({
+    const nextCard = {
       person,
       anchor: {
         x: elementRect.right - canvasRect.left + 14,
         y: elementRect.top - canvasRect.top + elementRect.height / 2,
       },
-    })
-  }, [clearHoverHideTimeout])
+    }
+    hoverShowTimeoutRef.current = window.setTimeout(() => {
+      if (suppressHoverRef.current) {
+        hoverShowTimeoutRef.current = null
+        return
+      }
+      setHoveredPersonCard(nextCard)
+      hoverShowTimeoutRef.current = null
+    }, HOVER_CARD_SHOW_DELAY_MS)
+  }, [clearHoverHideTimeout, clearHoverShowTimeout])
 
   const handleHoverEnd = useCallback(() => {
+    clearHoverShowTimeout()
     clearHoverHideTimeout()
     hoverHideTimeoutRef.current = window.setTimeout(() => {
       setHoveredPersonCard(null)
       hoverHideTimeoutRef.current = null
     }, 120)
-  }, [clearHoverHideTimeout])
+  }, [clearHoverHideTimeout, clearHoverShowTimeout])
 
   const familyUnits = useMemo(() => {
     const peopleById = personMap(people)
@@ -605,6 +654,7 @@ export function TreeCanvas({
             highlighted: highlightedNodeIds.has(person.id),
             deemphasized: deemphasizedIds.has(person.id),
             relationToViewer: relationLabelsById.get(person.id) ?? '',
+            onSelectPerson,
             onHoverStart: handleHoverStart,
             onHoverEnd: handleHoverEnd,
             onQuickAction: onPersonQuickAction,
@@ -649,6 +699,7 @@ export function TreeCanvas({
         highlighted: highlightedNodeIds.has(person.id),
         deemphasized: deemphasizedIds.has(person.id),
         relationToViewer: relationLabelsById.get(person.id) ?? '',
+        onSelectPerson,
         onHoverStart: handleHoverStart,
         onHoverEnd: handleHoverEnd,
         onQuickAction: onPersonQuickAction,
@@ -722,11 +773,12 @@ export function TreeCanvas({
     const canvasHeight = canvasRef.current.clientHeight
     const maxLeft = Math.max(12, canvasWidth - width - 12)
     const maxTop = Math.max(12, canvasHeight - height - 12)
-    const left =
+    let left =
       hoveredPersonCard.anchor.x + width <= canvasWidth - 12
         ? hoveredPersonCard.anchor.x
         : Math.max(12, hoveredPersonCard.anchor.x - width - 26)
-    const top = Math.min(maxTop, Math.max(12, hoveredPersonCard.anchor.y - height / 2))
+    let top = Math.min(maxTop, Math.max(12, hoveredPersonCard.anchor.y - height / 2))
+
     return { left: Math.min(maxLeft, left), top }
   }, [hoveredPersonCard])
 
@@ -796,7 +848,7 @@ export function TreeCanvas({
               sourceHandle: handles.sourceHandle,
               targetHandle: handles.targetHandle,
               type: 'simplebezier',
-              label: selectedEdgeId === mergedId ? edge.predicate.replaceAll('_', ' ') : '',
+              label: '',
               markerEnd: highlightedEdgeIds.has(edge.id)
                 ? highlightedEdgeMarker(edge.predicate)
                 : edgeMarker(edge.predicate),
@@ -815,7 +867,7 @@ export function TreeCanvas({
               },
               labelBgPadding: [6, 4],
               labelBgBorderRadius: 6,
-              selected: selectedEdgeId === mergedId,
+              selected: false,
               data: { rawEdgeIds: [edge.id] },
             })
           } else {
@@ -855,11 +907,7 @@ export function TreeCanvas({
           sourceHandle: handles.sourceHandle,
           targetHandle: handles.targetHandle,
           type: 'simplebezier',
-          label:
-            edge.id === selectedEdgeId ||
-            `${edge.id}:${sourceNodeId}:${targetNodeId}` === selectedEdgeId
-              ? edge.predicate.replaceAll('_', ' ')
-              : '',
+          label: '',
           markerEnd: highlightedEdgeIds.has(edge.id)
             ? highlightedEdgeMarker(edge.predicate)
             : edgeMarker(edge.predicate),
@@ -883,9 +931,7 @@ export function TreeCanvas({
           },
           labelBgPadding: [6, 4],
           labelBgBorderRadius: 6,
-          selected:
-            edge.id === selectedEdgeId ||
-            `${edge.id}:${sourceNodeId}:${targetNodeId}` === selectedEdgeId,
+          selected: false,
         })
       }
 
@@ -948,7 +994,7 @@ export function TreeCanvas({
         style: highlightedEdgeIds.has(edge.id)
           ? highlightedEdgeStyle(EdgePredicate.PARTNER_OF)
           : edgeStyle(EdgePredicate.PARTNER_OF),
-        selected: edge.id === selectedEdgeId,
+        selected: false,
       })
 
       if (sharedChildEdges.length === 0) continue
@@ -990,7 +1036,7 @@ export function TreeCanvas({
           sourceHandle: handles.sourceHandle,
           targetHandle: handles.targetHandle,
           type: 'simplebezier',
-          label: edge.id === selectedEdgeId ? edge.predicate.replaceAll('_', ' ') : '',
+          label: '',
           markerEnd: highlightedEdgeIds.has(edge.id)
             ? highlightedEdgeMarker(edge.predicate)
             : edgeMarker(edge.predicate),
@@ -1009,7 +1055,7 @@ export function TreeCanvas({
           },
           labelBgPadding: [6, 4],
           labelBgBorderRadius: 6,
-          selected: edge.id === selectedEdgeId,
+          selected: false,
         } satisfies FlowEdge,
       ]
     })
@@ -1027,10 +1073,7 @@ export function TreeCanvas({
         sourceHandle: handles.sourceHandle,
         targetHandle: handles.targetHandle,
         type: 'simplebezier',
-        label:
-          selectedEdgeId === `merged:${union.unionId}:${childId}`
-            ? union.predicate.replaceAll('_', ' ')
-            : '',
+        label: '',
         markerEnd: union.edgeIds.some((edgeId) => highlightedEdgeIds.has(edgeId))
           ? highlightedEdgeMarker(union.predicate)
           : edgeMarker(union.predicate),
@@ -1049,12 +1092,12 @@ export function TreeCanvas({
         },
         labelBgPadding: [6, 4],
         labelBgBorderRadius: 6,
-        selected: selectedEdgeId === `merged:${union.unionId}:${childId}`,
+        selected: false,
       }},
     )
 
     return [...unionConnectorEdges, ...directEdges, ...mergedChildEdges]
-  }, [deemphasizedIds, familyByMemberId, highlightedEdgeIds, layoutMode, people, selectedEdgeId, visibleEdges])
+  }, [deemphasizedIds, familyByMemberId, highlightedEdgeIds, layoutMode, people, visibleEdges])
 
   const organicPhysicsEdges = useMemo(() => {
     if (layoutMode === 'family') {
@@ -1676,21 +1719,32 @@ export function TreeCanvas({
         snapToGrid
         snapGrid={SNAP_GRID}
         selectNodesOnDrag={false}
+        nodeDragThreshold={6}
         nodesDraggable={layoutAlgorithm !== 'organic'}
         nodesConnectable={false}
         elementsSelectable
+        edgesFocusable={false}
         panOnDrag
-        panOnScroll
+        panOnScroll={false}
         zoomOnPinch
-        zoomOnScroll={false}
+        zoomOnScroll
         minZoom={0.35}
         maxZoom={1.6}
         defaultViewport={{ x: 40, y: 40, zoom: 0.9 }}
         onInit={(instance) => {
           flowInstanceRef.current = instance
         }}
+        onMoveStart={() => {
+          suppressHoverRef.current = true
+          cancelHoveredPersonCard()
+        }}
         onMove={() => {
           setViewportNonce((current) => current + 1)
+        }}
+        onMoveEnd={() => {
+          window.setTimeout(() => {
+            suppressHoverRef.current = false
+          }, 80)
         }}
         onNodeClick={(_, node) => {
           if (node.type === 'person') {
@@ -1698,7 +1752,7 @@ export function TreeCanvas({
           }
         }}
         onPaneClick={() => onSelectEdge(null)}
-        onEdgeClick={(_, edge) => onSelectEdge(edge.id)}
+        onEdgeClick={() => {}}
         onNodesChange={(changes: NodeChange[]) => {
           setNodes((current) => {
             const next = applyNodeChanges(changes, current)
@@ -1706,7 +1760,14 @@ export function TreeCanvas({
           })
         }}
         onEdgesChange={onEdgesChange}
+        onNodeDragStart={() => {
+          suppressHoverRef.current = true
+          cancelHoveredPersonCard()
+        }}
         onNodeDragStop={(_, node) => {
+          window.setTimeout(() => {
+            suppressHoverRef.current = false
+          }, 80)
           if (layoutAlgorithm === 'organic') return
           const snappedX = snapTo(node.position.x, SNAP_GRID[0])
           const snappedY = snapTo(node.position.y, SNAP_GRID[1])
@@ -1745,6 +1806,7 @@ export function TreeCanvas({
               graph={graph}
               person={hoveredPersonCard.person}
               currentViewerPerson={currentViewerPerson}
+              onSelectPerson={onSelectPerson}
               onQuickAction={onPersonQuickAction}
               onMouseEnter={clearHoverHideTimeout}
               onMouseLeave={handleHoverEnd}

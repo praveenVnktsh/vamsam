@@ -65,6 +65,7 @@ type AppShellProps = {
   treeId: string
   userEmail: string
   currentUserId: string
+  currentUserProfilePhoto: string
   linkedPersonId: string | null
   role: 'admin' | 'editor' | 'viewer'
   canEdit: boolean
@@ -78,6 +79,7 @@ export function AppShell({
   treeId,
   userEmail,
   currentUserId,
+  currentUserProfilePhoto,
   linkedPersonId,
   role,
   canEdit,
@@ -85,13 +87,9 @@ export function AppShell({
   onSignOut,
 }: AppShellProps) {
   type SaveState = 'saved' | 'dirty' | 'saving' | 'error'
-  const centerStageRef = useRef<HTMLElement | null>(null)
-  const rightStackRef = useRef<HTMLDivElement | null>(null)
   const [graph, setGraph] = useState<GraphSchema>(initialGraph)
   const [leftCollapsed, setLeftCollapsed] = useState(true)
   const [rightCollapsed, setRightCollapsed] = useState(true)
-  const [centerStageSize, setCenterStageSize] = useState({ width: 0, height: 0 })
-  const [rightStackHeight, setRightStackHeight] = useState(0)
   const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null)
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [flyToPersonRequest, setFlyToPersonRequest] = useState<{
@@ -143,6 +141,12 @@ export function AppShell({
   const [viewerPersonId, setViewerPersonId] = useState<string | null>(linkedPersonId)
   const [pendingChangeRequests, setPendingChangeRequests] = useState<ChangeRequest[]>([])
   const [changeRequestBusyId, setChangeRequestBusyId] = useState<string | null>(null)
+  const [isMobileViewport, setIsMobileViewport] = useState(
+    typeof window !== 'undefined' ? window.innerWidth <= 1024 : false,
+  )
+  const [mobilePanel, setMobilePanel] = useState<'none' | 'view' | 'relationship' | 'inspector'>(
+    'none',
+  )
   const graphRef = useRef(graph)
   const layoutRunRef = useRef(0)
   const saveRunRef = useRef(0)
@@ -158,21 +162,35 @@ export function AppShell({
   const depthIndex = depthOptions.indexOf(depth)
 
   function expandViewPanel() {
+    if (isMobileViewport) {
+      setMobilePanel('view')
+      return
+    }
     setViewControlsCollapsed(false)
     setRelationshipDialogCollapsed(true)
     setInspectorCollapsed(true)
   }
 
-  function expandRelationshipPanel() {
-    setViewControlsCollapsed(true)
-    setRelationshipDialogCollapsed(false)
-    setInspectorCollapsed(true)
-  }
-
   function expandInspectorPanel() {
+    if (isMobileViewport) {
+      setMobilePanel('inspector')
+      return
+    }
     setViewControlsCollapsed(true)
     setRelationshipDialogCollapsed(true)
     setInspectorCollapsed(false)
+  }
+
+  function revealInspectorForViewport() {
+    setRightCollapsed(false)
+    if (isMobileViewport) {
+      setMobilePanel('inspector')
+      setViewControlsCollapsed(true)
+      setRelationshipDialogCollapsed(true)
+      setInspectorCollapsed(false)
+      return
+    }
+    expandInspectorPanel()
   }
 
   function clearRelationshipSelection() {
@@ -181,7 +199,42 @@ export function AppShell({
     setRelationshipFromQuery('')
     setRelationshipToQuery('')
     setShowRelationshipGraph(false)
+    setRelationshipDialogCollapsed(true)
   }
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const handleResize = () => {
+      const nextIsMobile = window.innerWidth <= 1024
+      setIsMobileViewport(nextIsMobile)
+      if (!nextIsMobile) {
+        setMobilePanel('none')
+      } else {
+        setRightCollapsed(true)
+      }
+    }
+    handleResize()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  useEffect(() => {
+    if (!isMobileViewport) return
+    if (selectedPersonId) {
+      setMobilePanel('inspector')
+      return
+    }
+    if (!relationshipDialogCollapsed || relationshipFromId || relationshipToId || showRelationshipGraph) {
+      setMobilePanel('relationship')
+    }
+  }, [
+    isMobileViewport,
+    relationshipDialogCollapsed,
+    relationshipFromId,
+    relationshipToId,
+    selectedPersonId,
+    showRelationshipGraph,
+  ])
 
   function setGraphWithoutHistory(nextGraph: GraphSchema) {
     skipHistoryRef.current = true
@@ -255,47 +308,6 @@ export function AppShell({
   useEffect(() => {
     void loadRecentSnapshots(treeId).then(setRecentSnapshots).catch(() => undefined)
   }, [treeId])
-
-  useEffect(() => {
-    const stage = centerStageRef.current
-    if (!stage) return
-
-    const updateSize = () => {
-      setCenterStageSize({
-        width: stage.clientWidth,
-        height: stage.clientHeight,
-      })
-    }
-
-    updateSize()
-    const observer = new ResizeObserver(updateSize)
-    observer.observe(stage)
-    window.addEventListener('resize', updateSize)
-
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', updateSize)
-    }
-  }, [])
-
-  useEffect(() => {
-    const stack = rightStackRef.current
-    if (!stack) return
-
-    const updateSize = () => {
-      setRightStackHeight(stack.clientHeight)
-    }
-
-    updateSize()
-    const observer = new ResizeObserver(updateSize)
-    observer.observe(stack)
-    window.addEventListener('resize', updateSize)
-
-    return () => {
-      observer.disconnect()
-      window.removeEventListener('resize', updateSize)
-    }
-  }, [])
 
   useEffect(() => {
     if (skipHistoryRef.current) {
@@ -435,6 +447,13 @@ export function AppShell({
         : [],
     [graph, relationshipFromId, relationshipToId, showRelationshipGraph],
   )
+  const relationshipBloodPathIds = useMemo(
+    () =>
+      showRelationshipGraph && relationshipFromId && relationshipToId
+        ? shortestBloodPath(graph, relationshipFromId, relationshipToId)
+        : [],
+    [graph, relationshipFromId, relationshipToId, showRelationshipGraph],
+  )
 
   const relationshipPathEdgeIds = useMemo(() => {
     if (relationshipPathIds.length < 2) return new Set<string>()
@@ -458,13 +477,13 @@ export function AppShell({
   }, [graph.edges, relationshipPathIds])
 
   useEffect(() => {
-    if (!showRelationshipGraph || relationshipPathIds.length === 0) return
+    if (!relationshipFromId || !relationshipToId || relationshipPathIds.length === 0) return
 
     setFitToNodeIdsRequest((current) => ({
       nonce: (current?.nonce ?? 0) + 1,
       nodeIds: relationshipPathIds,
     }))
-  }, [relationshipPathIds, showRelationshipGraph])
+  }, [relationshipFromId, relationshipPathIds, relationshipToId])
 
   const visibleGraphEdges = useMemo(
     () => {
@@ -805,7 +824,10 @@ export function AppShell({
   ])
 
   function handleSelectPerson(id: string, options?: { fly?: boolean }) {
-    if (!relationshipDialogCollapsed) {
+    const relationshipModeActive =
+      !relationshipDialogCollapsed || showRelationshipGraph || !!relationshipFromId || !!relationshipToId
+
+    if (relationshipModeActive) {
       if (relationshipFromId && relationshipToId) {
         setRelationshipFromId(id)
         setRelationshipToId('')
@@ -821,12 +843,15 @@ export function AppShell({
       } else {
         setRelationshipToId(id)
       }
+      setSelectedEdgeId(null)
+      setRightCollapsed(true)
+      setInspectorCollapsed(true)
+      return
     }
 
     setSelectedPersonId(id)
     setSelectedEdgeId(null)
-    expandInspectorPanel()
-    setRightCollapsed(false)
+    revealInspectorForViewport()
     if (options?.fly) {
       setFlyToPersonRequest((current) => ({
         nonce: (current?.nonce ?? 0) + 1,
@@ -851,8 +876,7 @@ export function AppShell({
     if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
       applyValidatedGraphChange(nextGraph)
       setSelectedPersonId(result.newPersonId)
-      expandInspectorPanel()
-      setRightCollapsed(false)
+      revealInspectorForViewport()
       return
     }
 
@@ -893,7 +917,7 @@ export function AppShell({
     if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
       applyValidatedGraphChange(nextGraph)
       setSelectedPersonId(result.newPersonId)
-      setRightCollapsed(false)
+      revealInspectorForViewport()
       return
     }
 
@@ -909,7 +933,7 @@ export function AppShell({
     const result = addStandalonePerson(graph, defaultName)
     applyValidatedGraphChange(assignOwnerIfNeeded(result.graph, result.newPersonId))
     setSelectedPersonId(result.newPersonId)
-    setRightCollapsed(false)
+    revealInspectorForViewport()
   }
 
   function linkViewerEmail(graphToUpdate: GraphSchema, personId: string): GraphSchema {
@@ -942,6 +966,33 @@ export function AppShell({
     }
   }
 
+  function seedViewerProfilePhoto(graphToUpdate: GraphSchema, personId: string): GraphSchema {
+    const trimmedProfilePhoto = currentUserProfilePhoto.trim()
+    if (!trimmedProfilePhoto) return graphToUpdate
+
+    return {
+      ...graphToUpdate,
+      entities: graphToUpdate.entities.map((entity) => {
+        if (entity.entityType !== EntityType.PERSON || entity.id !== personId) return entity
+        const existingPhoto = String(entity.attrs?.photo ?? '').trim()
+        const hasRealPhoto =
+          /^(https?:\/\/|data:image\/|blob:|\/)/i.test(existingPhoto) ||
+          existingPhoto.startsWith('storage://') ||
+          /\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i.test(existingPhoto)
+
+        if (hasRealPhoto) return entity
+
+        return {
+          ...entity,
+          attrs: {
+            ...entity.attrs,
+            photo: trimmedProfilePhoto,
+          },
+        }
+      }),
+    }
+  }
+
   async function handleClaimExistingIdentity() {
     if (!identitySelectedId) {
       setIdentityError('Choose your person record first.')
@@ -955,11 +1006,12 @@ export function AppShell({
         userEmail,
         identitySelectedId,
         graphRef.current,
+        currentUserProfilePhoto,
       )
       setGraphWithoutHistory(nextGraph)
       setViewerPersonId(identitySelectedId)
       setSelectedPersonId(identitySelectedId)
-      expandInspectorPanel()
+      revealInspectorForViewport()
       setIdentityError(null)
     } catch (error) {
       setIdentityError(
@@ -981,6 +1033,7 @@ export function AppShell({
 
     let next = addStandalonePerson(graph, seededName)
     let nextGraph = linkViewerEmail(next.graph, next.newPersonId)
+    nextGraph = seedViewerProfilePhoto(nextGraph, next.newPersonId)
     nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'firstName', firstName || seededName)
     nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'lastName', lastName)
     nextGraph = updatePersonAttr(nextGraph, next.newPersonId, 'nickname', nickname)
@@ -1008,7 +1061,7 @@ export function AppShell({
       setGraphWithoutHistory(linkedGraph)
       setViewerPersonId(next.newPersonId)
       setSelectedPersonId(next.newPersonId)
-      expandInspectorPanel()
+      revealInspectorForViewport()
       setIdentityError(null)
     } catch (error) {
       setIdentityError(
@@ -1147,31 +1200,12 @@ export function AppShell({
             )
           })()
       : ''
-  const inspectorFlyoutStyle = useMemo<CSSProperties>(() => {
-    if (!centerStageSize.width || !centerStageSize.height) {
-      return { left: 16, top: 148 }
-    }
-
-    const estimatedWidth = 420
-    const top = Math.min(
-      Math.max(16, rightStackHeight + 26),
-      Math.max(16, centerStageSize.height - 320),
-    )
-    const maxHeight = Math.max(260, centerStageSize.height - top - 16)
-    const maxLeft = Math.max(16, centerStageSize.width - estimatedWidth - 16)
-    return {
-      left: Math.min(16, maxLeft),
-      top,
-      maxHeight,
-    }
-  }, [centerStageSize.height, centerStageSize.width, rightStackHeight])
   const sharedDnaPercent =
     relationshipFromId && relationshipToId
       ? estimateSharedDnaPercent(graph, relationshipFromId, relationshipToId)
       : null
   const workspaceStyle: CSSProperties = {
     '--left-sidebar-width': '320px',
-    gridTemplateColumns: leftCollapsed ? '28px minmax(0, 1fr)' : '320px minmax(0, 1fr)',
   } as CSSProperties
   const saveStateLabel =
     saveState === 'saving'
@@ -1415,7 +1449,7 @@ export function AppShell({
           )}
         </aside>
 
-        <section ref={centerStageRef} className="center-stage">
+        <section className="center-stage">
           <TreeCanvas
             graph={graph}
             visibleIds={visibleIds}
@@ -1432,7 +1466,7 @@ export function AppShell({
             }
             visibleEdges={visibleGraphEdges}
           highlightedEdgeIds={showRelationshipGraph ? relationshipPathEdgeIds : new Set()}
-          highlightedNodeIds={showRelationshipGraph ? new Set(relationshipPathIds) : new Set()}
+          highlightedNodeIds={showRelationshipGraph ? new Set(relationshipBloodPathIds) : new Set()}
           selectedPersonId={selectedPersonId ?? ''}
           selectedEdgeId={selectedEdgeId}
           layoutMode={layoutMode}
@@ -1615,7 +1649,103 @@ export function AppShell({
             </div>
           )}
 
-          <div className="canvas-left-stack">
+          {isMobileViewport ? (
+            <div className="mobile-topbar">
+              <div className="mobile-topbar__search finder-panel" role="dialog" aria-label="Find people">
+                <div className="finder-panel__header">
+                  <span className="mini-label">Find</span>
+                </div>
+                <label className="search-field finder-panel__search">
+                  <div className="finder-panel__search-input">
+                    <input
+                      value={search}
+                      onChange={(event) => setSearch(event.target.value)}
+                      placeholder="Search people..."
+                    />
+                    {search && (
+                      <button
+                        type="button"
+                        className="finder-panel__clear"
+                        aria-label="Clear search"
+                        onClick={() => setSearch('')}
+                      >
+                        ×
+                      </button>
+                    )}
+                  </div>
+                </label>
+                {search.trim() && (
+                  <div className="finder-panel__results">
+                    {finderPeople.slice(0, 8).map((person) => (
+                      <button
+                        key={person.id}
+                        type="button"
+                        className={
+                          person.id === selectedPersonId
+                            ? 'finder-panel__result active'
+                            : 'finder-panel__result'
+                        }
+                        onClick={() => handleSelectPerson(person.id, { fly: true })}
+                      >
+                        <strong>{displayName(person)}</strong>
+                        <small>{fullName(person)}</small>
+                      </button>
+                    ))}
+                    {finderPeople.length === 0 && (
+                      <p className="finder-panel__empty">No matching people.</p>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="mobile-topbar__actions">
+                <button
+                  type="button"
+                  className="canvas-quick-add"
+                  onClick={() =>
+                    handleCreateStandalonePerson(
+                      graphHasRenderablePeople(graph) ? 'New Person' : 'First Person',
+                    )
+                  }
+                  disabled={!canEdit}
+                  aria-label={
+                    graphHasRenderablePeople(graph) ? 'Add new person' : 'Add first person'
+                  }
+                >
+                  <span className="canvas-quick-add__icon">+</span>
+                  <span>{graphHasRenderablePeople(graph) ? 'New person' : 'First person'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  className="canvas-quick-add canvas-quick-add-secondary"
+                  onClick={() => {
+                    if (!currentViewerPerson) return
+                    setSelectedPersonId(currentViewerPerson.id)
+                    setSelectedEdgeId(null)
+                    revealInspectorForViewport()
+                    setFlyToPersonRequest((current) => ({
+                      nonce: (current?.nonce ?? 0) + 1,
+                      personId: currentViewerPerson.id,
+                    }))
+                  }}
+                  disabled={!currentViewerPerson}
+                  aria-label="Fly to my node"
+                >
+                  {currentViewerPerson ? (
+                    <PersonAvatar
+                      person={currentViewerPerson}
+                      className="canvas-quick-add__avatar"
+                    />
+                  ) : (
+                    <span className="canvas-quick-add__icon canvas-quick-add__icon-secondary">◎</span>
+                  )}
+                  <span>Fly to me</span>
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="canvas-left-stack">
             <div className="finder-panel" role="dialog" aria-label="Find people">
               <div className="finder-panel__header">
                 <span className="mini-label">Find</span>
@@ -1687,8 +1817,7 @@ export function AppShell({
                 if (!currentViewerPerson) return
                 setSelectedPersonId(currentViewerPerson.id)
                 setSelectedEdgeId(null)
-                setRightCollapsed(false)
-                expandInspectorPanel()
+                revealInspectorForViewport()
                 setFlyToPersonRequest((current) => ({
                   nonce: (current?.nonce ?? 0) + 1,
                   personId: currentViewerPerson.id,
@@ -1702,12 +1831,21 @@ export function AppShell({
                   : 'Link your email to a person to use Fly to me'
               }
             >
-              <span className="canvas-quick-add__icon canvas-quick-add__icon-secondary">◎</span>
+              {currentViewerPerson ? (
+                <PersonAvatar
+                  person={currentViewerPerson}
+                  className="canvas-quick-add__avatar"
+                />
+              ) : (
+                <span className="canvas-quick-add__icon canvas-quick-add__icon-secondary">◎</span>
+              )}
               <span>Fly to me</span>
             </button>
-          </div>
+            </div>
+          )}
 
-          <div ref={rightStackRef} className="canvas-right-stack">
+          {!isMobileViewport && (
+            <div className="canvas-right-stack">
           <div
             className={`floating-controls${
               viewControlsCollapsed ? ' floating-controls-collapsed' : ''
@@ -1909,7 +2047,9 @@ export function AppShell({
               className="relationship-dialog__header"
               onClick={() => {
                 if (relationshipDialogCollapsed) {
-                  expandRelationshipPanel()
+                  setRelationshipDialogCollapsed(false)
+                  setViewControlsCollapsed(true)
+                  setInspectorCollapsed(true)
                 } else {
                   setRelationshipDialogCollapsed(true)
                 }
@@ -1920,7 +2060,9 @@ export function AppShell({
                 if (event.key === 'Enter' || event.key === ' ') {
                   event.preventDefault()
                   if (relationshipDialogCollapsed) {
-                    expandRelationshipPanel()
+                    setRelationshipDialogCollapsed(false)
+                    setViewControlsCollapsed(true)
+                    setInspectorCollapsed(true)
                   } else {
                     setRelationshipDialogCollapsed(true)
                   }
@@ -1933,9 +2075,6 @@ export function AppShell({
                   {relationshipFrom && relationshipTo
                     ? `${displayName(relationshipFrom)} -> ${displayName(relationshipTo)}`
                     : 'Finder'}
-                </span>
-                <span className="floating-controls__chevron">
-                  {relationshipDialogCollapsed ? '+' : '-'}
                 </span>
                 <button
                   type="button"
@@ -1957,144 +2096,145 @@ export function AppShell({
               </div>
             </div>
             {!relationshipDialogCollapsed && (
-              <>
-            <div className="relationship-dialog__controls">
-              <PersonTokenSelector
-                label="Person"
-                people={sortedPeople}
-                query={relationshipFromQuery}
-                selectedPersonId={relationshipFromId}
-                selection={relationshipFromId ? { type: 'existing', id: relationshipFromId } : null}
-                compact
-                showSecondaryText={false}
-                onQueryChange={setRelationshipFromQuery}
-                onSelectionChange={(selection) => {
-                  if (selection?.type === 'existing') {
-                    setRelationshipFromId(selection.id)
-                    return
-                  }
-                  setRelationshipFromId('')
-                }}
-              />
-              <PersonTokenSelector
-                label="Of"
-                people={sortedPeople}
-                query={relationshipToQuery}
-                selectedPersonId={relationshipToId}
-                selection={relationshipToId ? { type: 'existing', id: relationshipToId } : null}
-                compact
-                showSecondaryText={false}
-                onQueryChange={setRelationshipToQuery}
-                onSelectionChange={(selection) => {
-                  if (selection?.type === 'existing') {
-                    setRelationshipToId(selection.id)
-                    return
-                  }
-                  setRelationshipToId('')
-                }}
-              />
-              <div className="relationship-dialog__reverse">
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => {
-                    setRelationshipFromId(relationshipToId)
-                    setRelationshipToId(relationshipFromId)
-                    setRelationshipFromQuery(relationshipToQuery)
-                    setRelationshipToQuery(relationshipFromQuery)
-                  }}
-                  disabled={!relationshipFromId && !relationshipToId}
-                >
-                  Reverse
-                </button>
-              </div>
-            </div>
-            <div className="relationship-dialog__answer">
-              {relationshipFrom && relationshipTo && relationshipResult ? (
-                <>
-                  <strong>
-                    {relationshipResult.labels || relationshipResult.label
-                      ? `${displayName(relationshipFrom)} is ${
-                          relationshipResult.labels
-                            ? relationshipResult.labels.en
-                            : relationshipResult.label
-                        } of ${displayName(relationshipTo)}.`
-                      : `${displayName(relationshipFrom)} is connected to ${displayName(
-                          relationshipTo,
-                        )}.`}
-                  </strong>
-                  {relationshipResult.labels ? (
-                    <p>
-                      {relationshipResult.labels.en} / {relationshipResult.labels.taLatin} /{' '}
-                      {relationshipResult.labels.hiLatin}
-                    </p>
-                  ) : relationshipResult.label ? (
-                    <p>{relationshipResult.label}</p>
-                  ) : (
-                    <p>Connected in the current graph.</p>
-                  )}
-                  {relationshipResult.socialLabels ? (
-                    <p>
-                      Social: {relationshipResult.socialLabels.en} /{' '}
-                      {relationshipResult.socialLabels.taLatin} /{' '}
-                      {relationshipResult.socialLabels.hiLatin}
-                    </p>
-                  ) : relationshipResult.socialLabel ? (
-                    <p>Social: {relationshipResult.socialLabel}</p>
-                  ) : null}
-                  {relationshipResult.labels && (
-                    <p>
-                      Tamil: {relationshipResult.labels.ta} · Hindi: {relationshipResult.labels.hi}
-                    </p>
-                  )}
-                  {relationshipResult.socialLabels && (
-                    <p>
-                      Social Tamil: {relationshipResult.socialLabels.ta} · Social Hindi:{' '}
-                      {relationshipResult.socialLabels.hi}
-                    </p>
-                  )}
-                  {bloodPath.length > 1 ? (
-                    <p>Connected by blood by {bloodPath.length - 1} hops.</p>
-                  ) : (
-                    <p>Not connected by blood in the current graph.</p>
-                  )}
-                  {sharedDnaPercent !== null && bloodPath.length > 0 && (
-                    <p>
-                      Approx. shared DNA:{' '}
-                      {sharedDnaPercent >= 1
-                        ? `${sharedDnaPercent.toFixed(sharedDnaPercent >= 10 ? 0 : 1)}%`
-                        : `${sharedDnaPercent.toFixed(2)}%`}
-                    </p>
-                  )}
-                  {!relationshipResult.label && relationshipResult.path.length > 0 && (
-                    <p>Path length: {relationshipResult.path.length - 1} hops</p>
-                  )}
-                  <div className="relationship-dialog__actions">
+              <div className="relationship-dialog__body">
+                <div className="relationship-dialog__controls">
+                  <PersonTokenSelector
+                    label="Person"
+                    people={sortedPeople}
+                    query={relationshipFromQuery}
+                    selectedPersonId={relationshipFromId}
+                    selection={relationshipFromId ? { type: 'existing', id: relationshipFromId } : null}
+                    compact
+                    showSecondaryText={false}
+                    onQueryChange={setRelationshipFromQuery}
+                    onSelectionChange={(selection) => {
+                      if (selection?.type === 'existing') {
+                        setRelationshipFromId(selection.id)
+                        return
+                      }
+                      setRelationshipFromId('')
+                    }}
+                  />
+                  <PersonTokenSelector
+                    label="Of"
+                    people={sortedPeople}
+                    query={relationshipToQuery}
+                    selectedPersonId={relationshipToId}
+                    selection={relationshipToId ? { type: 'existing', id: relationshipToId } : null}
+                    compact
+                    showSecondaryText={false}
+                    onQueryChange={setRelationshipToQuery}
+                    onSelectionChange={(selection) => {
+                      if (selection?.type === 'existing') {
+                        setRelationshipToId(selection.id)
+                        return
+                      }
+                      setRelationshipToId('')
+                    }}
+                  />
+                  <div className="relationship-dialog__reverse">
                     <button
                       type="button"
                       className="secondary-button"
-                      onClick={() => setShowRelationshipGraph((current) => !current)}
+                      onClick={() => {
+                        setRelationshipFromId(relationshipToId)
+                        setRelationshipToId(relationshipFromId)
+                        setRelationshipFromQuery(relationshipToQuery)
+                        setRelationshipToQuery(relationshipFromQuery)
+                      }}
+                      disabled={!relationshipFromId && !relationshipToId}
                     >
-                      {showRelationshipGraph ? 'Hide family' : 'Show family'}
+                      Reverse
                     </button>
                   </div>
-                </>
-              ) : (
-                <strong>Select two people.</strong>
-              )}
-            </div>
-              </>
+                </div>
+                <div className="relationship-dialog__answer">
+                  {relationshipFrom && relationshipTo && relationshipResult ? (
+                    <>
+                      <strong>
+                        {relationshipResult.labels || relationshipResult.label
+                          ? `${displayName(relationshipFrom)} is ${
+                              relationshipResult.labels
+                                ? relationshipResult.labels.en
+                                : relationshipResult.label
+                            } of ${displayName(relationshipTo)}.`
+                          : `${displayName(relationshipFrom)} is connected to ${displayName(
+                              relationshipTo,
+                            )}.`}
+                      </strong>
+                      {relationshipResult.labels ? (
+                        <p>
+                          {relationshipResult.labels.en} / {relationshipResult.labels.taLatin} /{' '}
+                          {relationshipResult.labels.hiLatin}
+                        </p>
+                      ) : relationshipResult.label ? (
+                        <p>{relationshipResult.label}</p>
+                      ) : (
+                        <p>Connected in the current graph.</p>
+                      )}
+                      {relationshipResult.socialLabels ? (
+                        <p>
+                          Social: {relationshipResult.socialLabels.en} /{' '}
+                          {relationshipResult.socialLabels.taLatin} /{' '}
+                          {relationshipResult.socialLabels.hiLatin}
+                        </p>
+                      ) : relationshipResult.socialLabel ? (
+                        <p>Social: {relationshipResult.socialLabel}</p>
+                      ) : null}
+                      {relationshipResult.labels && (
+                        <p>
+                          Tamil: {relationshipResult.labels.ta} · Hindi: {relationshipResult.labels.hi}
+                        </p>
+                      )}
+                      {relationshipResult.socialLabels && (
+                        <p>
+                          Social Tamil: {relationshipResult.socialLabels.ta} · Social Hindi:{' '}
+                          {relationshipResult.socialLabels.hi}
+                        </p>
+                      )}
+                      {bloodPath.length > 1 ? (
+                        <p>Connected by blood by {bloodPath.length - 1} hops.</p>
+                      ) : (
+                        <p>Not connected by blood in the current graph.</p>
+                      )}
+                      {sharedDnaPercent !== null && bloodPath.length > 0 && (
+                        <p>
+                          Approx. shared DNA:{' '}
+                          {sharedDnaPercent >= 1
+                            ? `${sharedDnaPercent.toFixed(sharedDnaPercent >= 10 ? 0 : 1)}%`
+                            : `${sharedDnaPercent.toFixed(2)}%`}
+                        </p>
+                      )}
+                      {!relationshipResult.label && relationshipResult.path.length > 0 && (
+                        <p>Path length: {relationshipResult.path.length - 1} hops</p>
+                      )}
+                      <div className="relationship-dialog__actions">
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() => setShowRelationshipGraph((current) => !current)}
+                        >
+                          {showRelationshipGraph ? 'Hide family' : 'Show family'}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <strong>Select two people.</strong>
+                  )}
+                </div>
+              </div>
             )}
-          </div>
+            </div>
+            </div>
+          )}
 
-          {!rightCollapsed && selectedPerson && (
+          {!isMobileViewport && !rightCollapsed && selectedPerson && (
             <div
               className={
                 inspectorCollapsed
                   ? 'inspector-flyout inspector-flyout-collapsed'
                   : 'inspector-flyout'
               }
-              style={inspectorFlyoutStyle}
               role="dialog"
               aria-label="Inspector"
             >
@@ -2254,7 +2394,442 @@ export function AppShell({
               />
             </div>
           )}
-          </div>
+
+          {isMobileViewport && (
+            <>
+              <div className="mobile-bottom-dock">
+                <button
+                  type="button"
+                  className={mobilePanel === 'view' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
+                  onClick={() => setMobilePanel((current) => (current === 'view' ? 'none' : 'view'))}
+                >
+                  View
+                </button>
+                <button
+                  type="button"
+                  className={mobilePanel === 'relationship' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
+                  onClick={() => {
+                    setRelationshipDialogCollapsed(false)
+                    setMobilePanel((current) => (current === 'relationship' ? 'none' : 'relationship'))
+                  }}
+                >
+                  Relationship
+                </button>
+                <button
+                  type="button"
+                  className={mobilePanel === 'inspector' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
+                  onClick={() => setMobilePanel((current) => (current === 'inspector' ? 'none' : 'inspector'))}
+                  disabled={!selectedPerson}
+                >
+                  Inspector
+                </button>
+              </div>
+
+              {mobilePanel !== 'none' && (
+                <div className="mobile-sheet">
+                  {mobilePanel === 'view' && (
+                    <div className="mobile-sheet__panel floating-controls" role="dialog" aria-label="View controls">
+                      <div className="floating-controls__header">
+                        <span className="mini-label">View</span>
+                        <div className="floating-controls__header-actions">
+                          <span className="floating-controls__value">
+                            {layoutAlgorithm === 'organic'
+                              ? 'Organic'
+                              : viewMode === 'overview'
+                                ? 'Overview'
+                                : viewMode === 'lineage'
+                                  ? 'Lineage'
+                                  : `${depth} hops`}
+                          </span>
+                          <button type="button" className="floating-controls__chevron" onClick={() => setMobilePanel('none')}>
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                      <div className="floating-controls__section">
+                        <div className="view-mode-switch" role="tablist" aria-label="View mode">
+                          <button
+                            type="button"
+                            className={viewMode === 'overview' ? 'view-mode-pill active' : 'view-mode-pill'}
+                            onClick={() => {
+                              setViewMode('overview')
+                              setShowRelationshipGraph(false)
+                            }}
+                          >
+                            Overview
+                          </button>
+                          <button
+                            type="button"
+                            className={viewMode === 'focus' ? 'view-mode-pill active' : 'view-mode-pill'}
+                            onClick={() => {
+                              setViewMode('focus')
+                              setShowRelationshipGraph(false)
+                            }}
+                          >
+                            Focus
+                          </button>
+                          <button
+                            type="button"
+                            className={viewMode === 'lineage' ? 'view-mode-pill active' : 'view-mode-pill'}
+                            onClick={() => {
+                              setViewMode('lineage')
+                              setShowRelationshipGraph(false)
+                            }}
+                            disabled={!selectedPerson}
+                          >
+                            Lineage
+                          </button>
+                        </div>
+                        <label className="depth-slider">
+                          <input
+                            type="range"
+                            min={0}
+                            max={depthOptions.length - 1}
+                            step={1}
+                            value={depthIndex}
+                            onChange={(event) => {
+                              const option = depthOptions[Number(event.target.value)] ?? 2
+                              setDepth(option)
+                              if (option === 99) {
+                                setViewMode('overview')
+                                setShowRelationshipGraph(false)
+                              } else {
+                                setViewMode('focus')
+                                setShowRelationshipGraph(false)
+                              }
+                            }}
+                          />
+                          <div className="depth-slider__ticks" aria-hidden="true">
+                            <span>1</span>
+                            <span>2</span>
+                            <span>3</span>
+                            <span>All</span>
+                          </div>
+                        </label>
+                      </div>
+                      <div className="floating-controls__section floating-controls__toggles">
+                        <button type="button" className="secondary-button" onClick={handleAutoOrganize}>
+                          Auto organize
+                        </button>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={compactLayout}
+                            onChange={(event) => setCompactLayout(event.target.checked)}
+                          />
+                          Compact layout
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={layoutAlgorithm === 'organic'}
+                            onChange={(event) =>
+                              setLayoutAlgorithm(event.target.checked ? 'organic' : 'hierarchy')
+                            }
+                          />
+                          Organic layout
+                        </label>
+                        {layoutAlgorithm === 'organic' ? (
+                          <label>
+                            <input
+                              type="checkbox"
+                              checked={organicLiveSimulation}
+                              onChange={(event) => setOrganicLiveSimulation(event.target.checked)}
+                            />
+                            Live simulation
+                          </label>
+                        ) : null}
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={layoutMode === 'family'}
+                            onChange={(event) =>
+                              setLayoutMode(event.target.checked ? 'family' : 'person')
+                            }
+                          />
+                          Family units
+                        </label>
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={includePartners}
+                            onChange={(event) => setIncludePartners(event.target.checked)}
+                          />
+                          Partners
+                        </label>
+                      </div>
+                    </div>
+                  )}
+
+                  {mobilePanel === 'relationship' && (
+                    <div className="mobile-sheet__panel relationship-dialog" role="dialog" aria-label="Relationship finder">
+                      <div className="relationship-dialog__header">
+                        <span className="mini-label">Relationship</span>
+                        <div className="floating-controls__header-actions">
+                          <span className="floating-controls__value">
+                            {relationshipFrom && relationshipTo
+                              ? `${displayName(relationshipFrom)} -> ${displayName(relationshipTo)}`
+                              : 'Finder'}
+                          </span>
+                          <button
+                            type="button"
+                            className="floating-controls__clear-button"
+                            aria-label="Close relationship finder"
+                            onClick={() => {
+                              clearRelationshipSelection()
+                              setMobilePanel('none')
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                      <div className="relationship-dialog__controls">
+                        <PersonTokenSelector
+                          label="Person"
+                          people={sortedPeople}
+                          query={relationshipFromQuery}
+                          selectedPersonId={relationshipFromId}
+                          selection={relationshipFromId ? { type: 'existing', id: relationshipFromId } : null}
+                          compact
+                          showSecondaryText={false}
+                          onQueryChange={setRelationshipFromQuery}
+                          onSelectionChange={(selection) => {
+                            if (selection?.type === 'existing') {
+                              setRelationshipFromId(selection.id)
+                              return
+                            }
+                            setRelationshipFromId('')
+                          }}
+                        />
+                        <PersonTokenSelector
+                          label="Of"
+                          people={sortedPeople}
+                          query={relationshipToQuery}
+                          selectedPersonId={relationshipToId}
+                          selection={relationshipToId ? { type: 'existing', id: relationshipToId } : null}
+                          compact
+                          showSecondaryText={false}
+                          onQueryChange={setRelationshipToQuery}
+                          onSelectionChange={(selection) => {
+                            if (selection?.type === 'existing') {
+                              setRelationshipToId(selection.id)
+                              return
+                            }
+                            setRelationshipToId('')
+                          }}
+                        />
+                        <div className="relationship-dialog__reverse">
+                          <button
+                            type="button"
+                            className="secondary-button"
+                            onClick={() => {
+                              setRelationshipFromId(relationshipToId)
+                              setRelationshipToId(relationshipFromId)
+                              setRelationshipFromQuery(relationshipToQuery)
+                              setRelationshipToQuery(relationshipFromQuery)
+                            }}
+                            disabled={!relationshipFromId && !relationshipToId}
+                          >
+                            Reverse
+                          </button>
+                        </div>
+                      </div>
+                      <div className="relationship-dialog__answer">
+                        {relationshipFrom && relationshipTo && relationshipResult ? (
+                          <>
+                            <strong>
+                              {relationshipResult.labels || relationshipResult.label
+                                ? `${displayName(relationshipFrom)} is ${
+                                    relationshipResult.labels
+                                      ? relationshipResult.labels.en
+                                      : relationshipResult.label
+                                  } of ${displayName(relationshipTo)}.`
+                                : `${displayName(relationshipFrom)} is connected to ${displayName(
+                                    relationshipTo,
+                                  )}.`}
+                            </strong>
+                            {relationshipResult.labels ? (
+                              <p>
+                                {relationshipResult.labels.en} / {relationshipResult.labels.taLatin} /{' '}
+                                {relationshipResult.labels.hiLatin}
+                              </p>
+                            ) : relationshipResult.label ? (
+                              <p>{relationshipResult.label}</p>
+                            ) : (
+                              <p>Connected in the current graph.</p>
+                            )}
+                            {bloodPath.length > 1 ? (
+                              <p>Connected by blood by {bloodPath.length - 1} hops.</p>
+                            ) : (
+                              <p>Not connected by blood in the current graph.</p>
+                            )}
+                            {sharedDnaPercent !== null && bloodPath.length > 0 && (
+                              <p>
+                                Approx. shared DNA:{' '}
+                                {sharedDnaPercent >= 1
+                                  ? `${sharedDnaPercent.toFixed(sharedDnaPercent >= 10 ? 0 : 1)}%`
+                                  : `${sharedDnaPercent.toFixed(2)}%`}
+                              </p>
+                            )}
+                            <div className="relationship-dialog__actions">
+                              <button
+                                type="button"
+                                className="secondary-button"
+                                onClick={() => setShowRelationshipGraph((current) => !current)}
+                              >
+                                {showRelationshipGraph ? 'Hide family' : 'Show family'}
+                              </button>
+                            </div>
+                          </>
+                        ) : (
+                          <strong>Select two people.</strong>
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {mobilePanel === 'inspector' && selectedPerson && (
+                    <div className="mobile-sheet__panel inspector-flyout">
+                      <Inspector
+                        graph={graph}
+                        selectedPerson={selectedPerson}
+                        selectedPersonId={selectedPersonId ?? ''}
+                        relationToViewer={selectedPersonRelationToViewer}
+                        visibleIds={visibleIds}
+                        allPeople={people}
+                        collapsed={false}
+                        canEditPerson={canEdit && selectedPersonCanDirectEdit}
+                        canManageConnections={canEdit}
+                        canDeletePerson={canEdit}
+                        onFlyToNode={() => {
+                          setFlyToPersonRequest((current) => ({
+                            nonce: (current?.nonce ?? 0) + 1,
+                            personId: selectedPerson.id,
+                          }))
+                        }}
+                        onClose={() => setMobilePanel('none')}
+                        onToggleCollapse={() => setMobilePanel('none')}
+                        onCreateStandalonePerson={handleCreateStandalonePerson}
+                        onQuickAddRelative={(type) => handleAddRelative(type)}
+                        onUpdateAttr={(key, value) =>
+                          canEdit && selectedPersonCanDirectEdit
+                            ? applyValidatedGraphChange((current) =>
+                                updatePersonAttr(current, selectedPersonId ?? '', key, value),
+                              )
+                            : undefined
+                        }
+                        onUpdateConnection={(edgeId, predicate) =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) =>
+                                updateEdge(current, edgeId, {
+                                  predicate: predicate as GraphSchema['edges'][number]['predicate'],
+                                }), {
+                                  actionType: 'update_relationship',
+                                  summary: `Update relationship for ${displayName(selectedPerson)}.`,
+                                  targetPersonId: selectedPerson.id,
+                                  targetRelationshipId: edgeId,
+                                }
+                              )
+                            : undefined
+                        }
+                        onReverseConnection={(edgeId) =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) => reverseEdge(current, edgeId), {
+                                actionType: 'reverse_relationship',
+                                summary: `Reverse relationship for ${displayName(selectedPerson)}.`,
+                                targetPersonId: selectedPerson.id,
+                                targetRelationshipId: edgeId,
+                              })
+                            : undefined
+                        }
+                        onDeleteConnection={(edgeId) =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) => deleteEdge(current, edgeId), {
+                                actionType: 'delete_relationship',
+                                summary: `Disconnect one relationship from ${displayName(selectedPerson)}.`,
+                                targetPersonId: selectedPerson.id,
+                                targetRelationshipId: edgeId,
+                              })
+                            : undefined
+                        }
+                        onAddConnectedPerson={(predicate, preferredName) => {
+                          if (!canEdit) return
+                          const result =
+                            predicate === 'sibling'
+                              ? addSiblingPerson(graph, selectedPerson, preferredName)
+                              : predicate === 'child'
+                                ? addParentPerson(graph, selectedPerson, preferredName)
+                                : addConnectedPerson(graph, selectedPerson, predicate, preferredName)
+                          const nextGraph = assignOwnerIfNeeded(result.graph, result.newPersonId)
+                          if (canDirectlyApplyGraphChange(graphRef.current, nextGraph)) {
+                            applyValidatedGraphChange(nextGraph)
+                            setSelectedPersonId(result.newPersonId)
+                            return
+                          }
+                          void queueGraphChangeRequest(nextGraph, {
+                            actionType: 'create_person',
+                            summary: `Add a connected person for ${displayName(selectedPerson)}.`,
+                            targetPersonId: selectedPerson.id,
+                          })
+                        }}
+                        onConnectExistingPerson={(targetId, predicate) =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) =>
+                                predicate === 'sibling'
+                                  ? connectPeopleAsSiblings(current, selectedPerson.id, targetId)
+                                  : predicate === 'child'
+                                    ? addConnection(
+                                        current,
+                                        targetId,
+                                        selectedPerson.id,
+                                        EdgePredicate.PARENT_OF,
+                                      )
+                                    : addConnection(
+                                        current,
+                                        selectedPerson.id,
+                                        targetId,
+                                        predicate as EdgePredicate,
+                                    ),
+                                {
+                                  actionType: 'connect_people',
+                                  summary: `Connect ${displayName(selectedPerson)} to another person.`,
+                                  targetPersonId: selectedPerson.id,
+                                }
+                              )
+                            : undefined
+                        }
+                        onUploadPhoto={async (file) => {
+                          const nextPhoto = await uploadCompressedPersonPhoto(treeId, selectedPerson.id, file)
+                          applyValidatedGraphChange((current) =>
+                            updatePersonAttr(current, selectedPerson.id, 'photo', nextPhoto),
+                          )
+                        }}
+                        onSoftDeletePerson={() =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) => softDeletePerson(current, selectedPerson.id), {
+                                actionType: 'soft_delete_person',
+                                summary: `Hide ${displayName(selectedPerson)}.`,
+                                targetPersonId: selectedPerson.id,
+                              })
+                            : undefined
+                        }
+                        onHardDeletePerson={() =>
+                          canEdit
+                            ? applyGraphChangeWithPermissions((current) => hardDeletePerson(current, selectedPerson.id), {
+                                actionType: 'delete_person',
+                                summary: `Delete ${displayName(selectedPerson)}.`,
+                                targetPersonId: selectedPerson.id,
+                              })
+                            : undefined
+                        }
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+            </>
+          )}
         </section>
       </div>
     </div>

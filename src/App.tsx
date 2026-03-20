@@ -40,6 +40,25 @@ function LoadingScreen({ label }: { label: string }) {
   )
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeoutId = window.setTimeout(() => {
+      reject(new Error(`${label} timed out. Please try again.`))
+    }, ms)
+
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeoutId)
+        resolve(value)
+      },
+      (error) => {
+        window.clearTimeout(timeoutId)
+        reject(error)
+      },
+    )
+  })
+}
+
 function AuthScreen({ invitePreview }: { invitePreview?: InvitePreview | null }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -271,6 +290,7 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
   const [sessionLoading, setSessionLoading] = useState(true)
   const [treeAccess, setTreeAccess] = useState<TreeAccess | null>(null)
   const [treeLoading, setTreeLoading] = useState(false)
+  const [treeLoadAttempt, setTreeLoadAttempt] = useState(0)
   const [treeError, setTreeError] = useState('')
   const [invitePreview, setInvitePreview] = useState<InvitePreview | null>(null)
   const [inviteLoading, setInviteLoading] = useState(Boolean(inviteToken))
@@ -356,7 +376,15 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
       }
 
       try {
-        const tree = await fetchPrimaryTreeAccess(session.user.id, session.user.email ?? '')
+        const tree = await withTimeout(
+          fetchPrimaryTreeAccess(
+            session.user.id,
+            session.user.email ?? '',
+            String(session.user.user_metadata?.avatar_url ?? session.user.user_metadata?.picture ?? ''),
+          ),
+          12000,
+          'Loading family tree',
+        )
         if (cancelled) return
         if (!tree && inviteErrorMessage) {
           setTreeError(inviteErrorMessage)
@@ -377,7 +405,7 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
     return () => {
       cancelled = true
     }
-  }, [session])
+  }, [inviteToken, session, treeLoadAttempt])
 
   if (!isSupabaseConfigured) return <SetupScreen />
   if (sessionLoading) return <LoadingScreen label="Checking session..." />
@@ -401,6 +429,11 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
       <main className="auth-screen">
         <section className="auth-card auth-card-compact">
           <p className="auth-form__error">{treeError}</p>
+          <div className="auth-form__actions">
+            <button type="button" onClick={() => setTreeLoadAttempt((value) => value + 1)}>
+              Retry
+            </button>
+          </div>
         </section>
       </main>
     )
@@ -421,6 +454,9 @@ function SupabaseApp({ inviteToken = null }: { inviteToken?: string | null }) {
       treeId={treeAccess.id}
       userEmail={session.user.email ?? 'Signed in'}
       currentUserId={session.user.id}
+      currentUserProfilePhoto={String(
+        session.user.user_metadata?.avatar_url ?? session.user.user_metadata?.picture ?? '',
+      )}
       linkedPersonId={treeAccess.linkedPersonId}
       role={treeAccess.role}
       canEdit={treeAccess.role !== 'viewer'}

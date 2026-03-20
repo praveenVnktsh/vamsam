@@ -74,6 +74,17 @@ type GraphDiff = {
   nextGraph: GraphSchema
 }
 
+function isImageLikePhotoValue(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+
+  return (
+    /^(https?:\/\/|data:image\/|blob:|\/)/i.test(trimmed) ||
+    trimmed.startsWith('storage://') ||
+    /\.(png|jpe?g|gif|webp|svg)(\?.*)?$/i.test(trimmed)
+  )
+}
+
 function requireSupabase() {
   if (!supabase) {
     throw new Error('Supabase is not configured.')
@@ -217,7 +228,12 @@ async function ensureTreeNormalized(treeId: string) {
   }
 }
 
-async function ensureLinkedPersonFromEmail(treeId: string, userId: string, email: string) {
+async function ensureLinkedPersonFromEmail(
+  treeId: string,
+  userId: string,
+  email: string,
+  profilePhotoUrl = '',
+) {
   const client = requireSupabase()
   const normalizedEmail = email.trim().toLowerCase()
   if (!normalizedEmail) return null
@@ -258,6 +274,10 @@ async function ensureLinkedPersonFromEmail(treeId: string, userId: string, email
       attrs: {
         ...entity.attrs,
         email,
+        photo:
+          !isImageLikePhotoValue(String(entity.attrs.photo ?? '')) && profilePhotoUrl.trim()
+            ? profilePhotoUrl.trim()
+            : entity.attrs.photo,
         ownerUserId: userId,
       },
     },
@@ -289,6 +309,7 @@ async function ensureLinkedPersonFromEmail(treeId: string, userId: string, email
 export async function fetchPrimaryTreeAccess(
   userId: string,
   userEmail = '',
+  profilePhotoUrl = '',
 ): Promise<TreeAccess | null> {
   const client = requireSupabase()
   const { data: membership, error: membershipError } = await client
@@ -318,7 +339,12 @@ export async function fetchPrimaryTreeAccess(
   if (!tree) return null
 
   await ensureTreeNormalized(tree.id)
-  const linkedPersonId = await ensureLinkedPersonFromEmail(tree.id, userId, userEmail)
+  const linkedPersonId = await ensureLinkedPersonFromEmail(
+    tree.id,
+    userId,
+    userEmail,
+    profilePhotoUrl,
+  )
 
   const [{ data: peopleRows, error: peopleError }, { data: relationshipRows, error: relationshipsError }] =
     await Promise.all([
@@ -450,7 +476,11 @@ export async function createPrimaryTree(user: User, name = 'வம்சம்')
     nextGraph: graph,
   })
 
-  const tree = await fetchPrimaryTreeAccess(user.id, user.email ?? '')
+  const tree = await fetchPrimaryTreeAccess(
+    user.id,
+    user.email ?? '',
+    String(user.user_metadata?.avatar_url ?? user.user_metadata?.picture ?? ''),
+  )
   if (!tree) {
     throw new Error('Tree was created, but could not be loaded afterward.')
   }
@@ -590,6 +620,7 @@ export async function linkUserToPerson(
   userEmail: string,
   personId: string,
   graph: GraphSchema,
+  profilePhotoUrl = '',
 ): Promise<GraphSchema> {
   const client = requireSupabase()
   const personEntity = graph.entities.find(
@@ -624,6 +655,10 @@ export async function linkUserToPerson(
             attrs: {
               ...entity.attrs,
               email: userEmail,
+              photo:
+                !isImageLikePhotoValue(String(entity.attrs.photo ?? '')) && profilePhotoUrl.trim()
+                  ? profilePhotoUrl.trim()
+                  : entity.attrs.photo,
             },
           },
           userId,
