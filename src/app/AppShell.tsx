@@ -58,6 +58,10 @@ import { PersonAvatar } from '../features/PersonAvatar'
 import { TreeCanvas } from '../features/canvas/TreeCanvas'
 import { Inspector } from '../features/inspector/Inspector'
 import { uploadCompressedPersonPhoto } from '../data/photoStorage'
+import { DirectoryView } from '../features/directory/DirectoryView'
+import { IAmPicker } from '../features/directory/IAmPicker'
+import { useIdentity } from '../hooks/useIdentity'
+import { useKinshipBatch } from '../hooks/useKinshipBatch'
 
 const depthOptions = [1, 2, 3, 99] as const
 
@@ -143,6 +147,11 @@ export function AppShell({
   const [identityLinkType, setIdentityLinkType] = useState<'child_of' | 'parent_of' | 'sibling_of' | 'partner_of'>('child_of')
   const [identityError, setIdentityError] = useState<string | null>(null)
   const [viewerPersonId, setViewerPersonId] = useState<string | null>(linkedPersonId)
+  const { iAmPersonId, setIAmPersonId, hasChosenIdentity } = useIdentity(linkedPersonId, treeId)
+  const [activeView, setActiveView] = useState<'canvas' | 'directory'>(
+    typeof window !== 'undefined' && window.innerWidth < 768 ? 'directory' : 'canvas',
+  )
+  const [showIAmPicker, setShowIAmPicker] = useState(false)
   const [pendingChangeRequests, setPendingChangeRequests] = useState<ChangeRequest[]>([])
   const [changeRequestBusyId, setChangeRequestBusyId] = useState<string | null>(null)
   const [isMobileViewport, setIsMobileViewport] = useState(
@@ -389,6 +398,11 @@ export function AppShell({
 
   const people = useMemo(() => graphPeople(graph), [graph])
   const peopleById = useMemo(() => personMap(people), [people])
+  const kinshipMap = useKinshipBatch(graph, iAmPersonId, people)
+  const iAmPerson = useMemo(
+    () => (iAmPersonId ? peopleById.get(iAmPersonId) ?? null : null),
+    [peopleById, iAmPersonId],
+  )
   const currentViewerPerson = useMemo(
     () => (viewerPersonId ? peopleById.get(viewerPersonId) ?? null : null),
     [peopleById, viewerPersonId],
@@ -1482,6 +1496,17 @@ export function AppShell({
         </aside>
 
         <section className="center-stage">
+          {activeView === 'directory' ? (
+            <DirectoryView
+              graph={graph}
+              people={people}
+              iAmPersonId={iAmPersonId}
+              iAmPerson={iAmPerson}
+              kinshipMap={kinshipMap}
+              onChangeIdentity={() => setShowIAmPicker(true)}
+              peopleById={peopleById}
+            />
+          ) : (
           <TreeCanvas
             graph={graph}
             visibleIds={visibleIds}
@@ -1560,6 +1585,27 @@ export function AppShell({
             currentViewerPerson={currentViewerPerson}
             onPersonQuickAction={handleCanvasPersonQuickAction}
           />
+          )}
+
+          {showIAmPicker && (
+            <IAmPicker
+              people={people}
+              onSelect={(personId) => {
+                setIAmPersonId(personId)
+                setShowIAmPicker(false)
+              }}
+              onDismiss={() => setShowIAmPicker(false)}
+            />
+          )}
+
+          {activeView === 'directory' && !hasChosenIdentity && (
+            <IAmPicker
+              people={people}
+              onSelect={(personId) => {
+                setIAmPersonId(personId)
+              }}
+            />
+          )}
 
           {!currentViewerPerson && (
             <div className="identity-onboarding">
@@ -2479,6 +2525,13 @@ export function AppShell({
           {isMobileViewport && (
             <>
               <div className="mobile-bottom-dock">
+                <button
+                  type="button"
+                  className={activeView === 'directory' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
+                  onClick={() => setActiveView(activeView === 'directory' ? 'canvas' : 'directory')}
+                >
+                  {activeView === 'directory' ? 'Map' : 'Directory'}
+                </button>
                 <button
                   type="button"
                   className={mobilePanel === 'view' ? 'mobile-bottom-dock__tab active' : 'mobile-bottom-dock__tab'}
