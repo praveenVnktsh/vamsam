@@ -16,6 +16,10 @@ It is designed for manual curation rather than bulk import:
 - Add quick relatives: parent, child, partner, sibling
 - Search people and inspect/edit details in a side panel
 - Ask “Who is X to Y?” and inspect the BFS relationship path
+- **Family directory view** with generation-based grouping and personalized kinship labels
+- **”I am [X]” identity** — set once, see every person's kinship relative to you
+- **Photo grid browse** for visual person lookup
+- **In-law detection** (brother-in-law, sister-in-law)
 - Save locally in the browser
 - Import/export the graph as JSON
 
@@ -84,8 +88,8 @@ Recommended workflow:
 ## Notes
 
 - `Private notes` is only a UI/data distinction for now.
-- There is no auth layer yet.
-- The long-term plan is to gate private fields once authentication exists.
+- Supabase auth with OAuth (Google) and invite-based access is implemented.
+- Role-based access: admin, editor, viewer with change request approval workflow.
 
 ## Status
 
