@@ -30,6 +30,8 @@ export type CanonicalRelationKey =
   | 'paternal_uncle_spouse'
   | 'paternal_aunt_spouse'
   | 'paternal_in_law'
+  | 'brother_in_law'
+  | 'sister_in_law'
   | 'cousin'
 
 export type SocialRelationKey =
@@ -266,6 +268,20 @@ export const KINSHIP_LABELS: Record<CanonicalRelationKey, KinshipLabelSet> = {
     taLatin: 'attimpēr / citti / periyammā',
     hi: 'फूफा / चाची / ताई',
     hiLatin: 'phūphā / cācī / tāī',
+  },
+  brother_in_law: {
+    en: 'brother-in-law',
+    ta: 'மச்சான்',
+    taLatin: 'maccāṉ',
+    hi: 'जीजा',
+    hiLatin: 'jījā',
+  },
+  sister_in_law: {
+    en: 'sister-in-law',
+    ta: 'மச்சினி',
+    taLatin: 'macciṉi',
+    hi: 'भाभी',
+    hiLatin: 'bhābhī',
   },
   cousin: {
     en: 'cousin',

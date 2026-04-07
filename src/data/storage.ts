@@ -5,6 +5,7 @@ const DB_NAME = 'family-tree-db'
 const STORE_NAME = 'graphs'
 const GRAPH_KEY = 'workspace'
 const SNAPSHOT_STORE_NAME = 'snapshots'
+const PUBLISHED_KEY_PREFIX = 'published:'
 
 export type GraphSnapshot = {
   id: string
@@ -90,4 +91,30 @@ export async function saveGraphSnapshot(
   }
 
   await tx.done
+}
+
+export async function publishGraphSnapshot(
+  treeId: string,
+  graph: GraphSchema,
+): Promise<GraphSnapshot> {
+  const db = await getDb()
+  const snapshot: GraphSnapshot = {
+    id: `${PUBLISHED_KEY_PREFIX}${treeId}`,
+    treeId,
+    createdAt: new Date().toISOString(),
+    graph: JSON.parse(JSON.stringify(graph)),
+  }
+  await db.put(SNAPSHOT_STORE_NAME, snapshot)
+  return snapshot
+}
+
+export async function loadPublishedSnapshot(
+  treeId: string,
+): Promise<GraphSnapshot | null> {
+  const db = await getDb()
+  const snapshot = await db.get(
+    SNAPSHOT_STORE_NAME,
+    `${PUBLISHED_KEY_PREFIX}${treeId}`,
+  )
+  return (snapshot as GraphSnapshot | undefined) ?? null
 }

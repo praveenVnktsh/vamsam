@@ -2687,7 +2687,187 @@ export function resolveRelationship(
     }
   }
 
+  // In-law detection: partner's sibling or sibling's partner
+  const fromPartners = partnerIdsOf(graph, fromId)
+  for (const partnerId of fromPartners) {
+    const partnerSiblings = siblingIdsOf(graph, partnerId)
+    if (partnerSiblings.includes(toId)) {
+      const resolved = buildResolvedRelationship(
+        inferSexLabel(to.sex, 'brother_in_law', 'sister_in_law', 'brother_in_law') as CanonicalRelationKey,
+        path,
+      )
+      return resolved
+    }
+  }
+  const fromSiblingsForInLaw = siblingIdsOf(graph, fromId)
+  for (const siblingId of fromSiblingsForInLaw) {
+    const siblingPartners = partnerIdsOf(graph, siblingId)
+    if (siblingPartners.includes(toId)) {
+      const resolved = buildResolvedRelationship(
+        inferSexLabel(to.sex, 'brother_in_law', 'sister_in_law', 'brother_in_law') as CanonicalRelationKey,
+        path,
+      )
+      return resolved
+    }
+  }
+
   return { label: '', path, socialLabel: undefined }
+}
+
+export function buildRelationshipPath(
+  graph: GraphSchema,
+  path: string[],
+): string {
+  if (path.length === 0) return ''
+  const people = personMap(graphPeople(graph))
+  if (path.length === 1) {
+    const person = people.get(path[0])
+    return person ? displayName(person) : ''
+  }
+
+  const segments: string[] = []
+  for (let i = 0; i < path.length; i++) {
+    const person = people.get(path[i])
+    if (!person) continue
+
+    if (i === 0) {
+      segments.push('You')
+    } else {
+      const prevId = path[i - 1]
+      const rel = resolveRelationship(graph, prevId, path[i])
+      const prevPerson = people.get(prevId)
+      const relLabel = rel.label
+        ? `${prevPerson && i > 1 ? 'their' : 'your'} ${rel.label}`
+        : ''
+      segments.push(`${displayName(person)}${relLabel ? ` (${relLabel})` : ''}`)
+    }
+  }
+
+  if (path.length > 7) {
+    return `${segments[0]} → ${segments[1]} → ... → ${segments[segments.length - 1]} (${path.length - 1} hops)`
+  }
+
+  return segments.join(' → ')
+}
+
+export function computeGenerationTiers(
+  graph: GraphSchema,
+  rootPersonId: string,
+): Map<string, number> {
+  const tiers = new Map<string, number>([[rootPersonId, 0]])
+  const queue = [rootPersonId]
+
+  while (queue.length > 0) {
+    const current = queue.shift()
+    if (!current) continue
+    const currentTier = tiers.get(current) ?? 0
+
+    for (const edge of graph.edges) {
+      if (edge.predicate === EdgePredicate.PARENT_OF) {
+        if (edge.src === current && !tiers.has(edge.dst)) {
+          tiers.set(edge.dst, currentTier + 1)
+          queue.push(edge.dst)
+        }
+        if (edge.dst === current && !tiers.has(edge.src)) {
+          tiers.set(edge.src, currentTier - 1)
+          queue.push(edge.src)
+        }
+      }
+      if (edge.predicate === EdgePredicate.PARTNER_OF) {
+        const partnerId = edge.src === current ? edge.dst : edge.dst === current ? edge.src : null
+        if (partnerId && !tiers.has(partnerId)) {
+          tiers.set(partnerId, currentTier)
+          queue.push(partnerId)
+        }
+      }
+    }
+  }
+
+  return tiers
+}
+
+export function brideGroomPartition(
+  graph: GraphSchema,
+  brideId: string,
+  groomId: string,
+): { bride: Set<string>; groom: Set<string>; shared: Set<string> } {
+  const people = new Set(graph.entities.filter(isPersonEntity).map((e) => e.id))
+
+  function bfsReachable(startId: string): Set<string> {
+    const visited = new Set<string>([startId])
+    const queue = [startId]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      for (const edge of graph.edges) {
+        const neighbor =
+          edge.src === current && people.has(edge.dst) ? edge.dst :
+          edge.dst === current && people.has(edge.src) ? edge.src : null
+        if (neighbor && !visited.has(neighbor)) {
+          visited.add(neighbor)
+          queue.push(neighbor)
+        }
+      }
+    }
+    return visited
+  }
+
+  const brideAncestors = new Set<string>()
+  const groomAncestors = new Set<string>()
+
+  function walkAncestors(startId: string, target: Set<string>) {
+    const visited = new Set<string>([startId])
+    const queue = [startId]
+    while (queue.length > 0) {
+      const current = queue.shift()!
+      target.add(current)
+      for (const parentId of parentIdsOf(graph, current)) {
+        if (!visited.has(parentId)) {
+          visited.add(parentId)
+          queue.push(parentId)
+        }
+      }
+      for (const partnerId of partnerIdsOf(graph, current)) {
+        if (!visited.has(partnerId)) {
+          visited.add(partnerId)
+          queue.push(partnerId)
+        }
+      }
+    }
+  }
+
+  walkAncestors(brideId, brideAncestors)
+  walkAncestors(groomId, groomAncestors)
+
+  const brideSet = new Set<string>()
+  const groomSet = new Set<string>()
+  const sharedSet = new Set<string>()
+
+  const allReachable = bfsReachable(brideId)
+  for (const groomReach of bfsReachable(groomId)) {
+    allReachable.add(groomReach)
+  }
+
+  for (const personId of allReachable) {
+    const inBride = brideAncestors.has(personId)
+    const inGroom = groomAncestors.has(personId)
+    if (inBride && inGroom) {
+      sharedSet.add(personId)
+    } else if (inBride) {
+      brideSet.add(personId)
+    } else if (inGroom) {
+      groomSet.add(personId)
+    } else {
+      const closerToBride = shortestPersonPath(graph, brideId, personId).length
+      const closerToGroom = shortestPersonPath(graph, groomId, personId).length
+      if (closerToBride <= closerToGroom) {
+        brideSet.add(personId)
+      } else {
+        groomSet.add(personId)
+      }
+    }
+  }
+
+  return { bride: brideSet, groom: groomSet, shared: sharedSet }
 }
 
 export function graphHasRenderablePeople(graph: GraphSchema): boolean {
