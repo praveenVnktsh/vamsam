@@ -9,13 +9,13 @@ jobs:
     steps:
       - name: Generate .env
         run: |
-          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" > .env
-          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> .env
-          echo "VITE_SUPABASE_PHOTOS_BUCKET=person-photos" >> .env
+          echo "VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}" > env.txt
+          echo "VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}" >> env.txt
+          echo "VITE_SUPABASE_PHOTOS_BUCKET=person-photos" >> env.txt
 
-      - name: Upload .env as artifact
+      - name: Upload env as artifact
         uses: actions/upload-artifact@v4
         with:
           name: env-file
-          path: .env
+          path: env.txt
           retention-days: 1
