@@ -1,0 +1,23 @@
+name: Pull env secrets
+
+on:
+  workflow_dispatch:
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Generate .env
+        run: |
+          cat <<EOF > .env
+          VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_SUPABASE_PHOTOS_BUCKET=person-photos
+          EOF
+
+      - name: Upload .env as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: env-file
+          path: .env
+          retention-days: 1
