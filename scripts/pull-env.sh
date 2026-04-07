@@ -2,8 +2,9 @@
 # Pull .env from GitHub Secrets via workflow artifact
 set -e
 
-echo "Triggering pull-env workflow..."
-gh workflow run pull-env.yml
+BRANCH=$(git branch --show-current)
+echo "Triggering pull-env workflow on $BRANCH..."
+gh workflow run pull-env.yml --ref "$BRANCH"
 
 echo "Waiting for workflow to complete..."
 sleep 5
